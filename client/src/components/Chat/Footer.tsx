@@ -78,9 +78,9 @@ function Footer({ className, startupConfig, configuredOnly = false }: FooterProp
   /** The generic disclaimer is the part a conversation drops; operator content is not. */
   const genericFooter = configuredOnly
     ? ''
-    : '[LibreChat ' +
+    : '[PindyChat ' +
       Constants.VERSION +
-      '](https://librechat.ai) - ' +
+      '](https://chat.pindyyogurt.store) - ' +
       localize('com_ui_latest_footer');
   const mainContent = configuredFooter ?? genericFooter;
   const mainContentParts = mainContent === '' ? [] : mainContent.split('|');

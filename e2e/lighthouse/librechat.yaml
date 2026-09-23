@@ -3,5 +3,7 @@ cache: true
 endpoints:
   openAI:
     titleConvo: false
+  qwen:
+    iconURL: "/assets/qwen.svg"
 openapi:
   enabled: true

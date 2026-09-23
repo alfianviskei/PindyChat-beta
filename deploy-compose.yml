@@ -5,9 +5,9 @@ services:
     #   dockerfile: Dockerfile.multi
     #   target: api-build
     image: registry.librechat.ai/danny-avila/librechat-dev-api:latest
-    container_name: LibreChat-API
-    ports:
-      - 3080:3080
+    container_name: PindyChat-API
+    #ports:
+     # - 3080:3080
     depends_on:
       - mongodb
       - rag_api
@@ -37,6 +37,7 @@ services:
         source: ./librechat.yaml
         target: /app/librechat.yaml
       - ./images:/app/client/public/images
+      - ./client/public/assets:/app/client/public/assets
       - ./uploads:/app/uploads
       - ./logs:/app/api/logs
       - ./skill:/app/skill
@@ -59,10 +60,9 @@ services:
 
   client:
     image: nginx:1.27.0-alpine
-    container_name: LibreChat-NGINX
+    container_name: PindyChat-NGINX
     ports:
-      - 80:80
-      - 443:443
+      - 3080:443
     depends_on:
       - api
       - admin-panel
