@@ -1,9 +1,32 @@
 services:
   api:
+    # Built from this checkout rather than pulled from the upstream registry:
+    # the PindyChat name, the login wordmark, the icons and the provider
+    # web-search indicator all live in the source now, so a pre-built image
+    # would ship none of them. `Dockerfile.multi` is the staged build the
+    # upstream images come from — packages and client compile in parallel
+    # stages and only production dependencies land in the runtime layer.
+    # Layers cache on `package*.json`, so a source-only change rebuilds in
+    # minutes and a no-op `up --build` in seconds.
     build:
       context: .
-      dockerfile: Dockerfile.branding
-    # image: registry.librechat.ai/danny-avila/librechat-dev-api:latest
+      dockerfile: Dockerfile.multi
+      args:
+        # Surfaced in Settings -> About for support triage. Optional: pass them
+        # through the environment when building, e.g.
+        #   BUILD_COMMIT=$(git rev-parse --short HEAD) npm run start:deployed
+        BUILD_COMMIT: ${BUILD_COMMIT:-}
+        BUILD_BRANCH: ${BUILD_BRANCH:-}
+        BUILD_DATE: ${BUILD_DATE:-}
+        # Heap ceiling for the client build, which is the memory peak of the
+        # whole image. Upstream's 6144 assumes a build host with the RAM to
+        # match; on a small VPS it lets Node grow past physical memory and get
+        # OOM-killed instead of collecting garbage, so lower it to fit the box:
+        #   NODE_MAX_OLD_SPACE_SIZE=2560 npm run start:deployed
+        NODE_MAX_OLD_SPACE_SIZE: ${NODE_MAX_OLD_SPACE_SIZE:-6144}
+        # `npm ci` wall-clock budget per attempt. The 1500s default is generous
+        # on a normal builder but a single-core host can exceed it.
+        NPM_CI_TIMEOUT_SECONDS: ${NPM_CI_TIMEOUT_SECONDS:-1500}
     container_name: PindyChat-API
     #ports:
      # - 3080:3080
@@ -36,7 +59,14 @@ services:
         source: ./librechat.yaml
         target: /app/librechat.yaml
       - ./images:/app/client/public/images
-      - ./client/public/assets:/app/client/public/assets
+      # Deliberately no bind mount over `client/public/assets`. The client build
+      # runs `copyPublicAssets()` (client/vite.config.ts), which folds
+      # `public/assets` into `dist/assets`, and `api/server/index.js` serves
+      # `paths.dist` ahead of `paths.assets` — so the logo, favicons and endpoint
+      # icons are answered from the built bundle and a mount here would sit
+      # behind it, looking like an override while changing nothing. Swap the mark
+      # by editing `client/public/assets`, regenerating the PNGs with
+      # `client/scripts/generate-icons.mjs`, and rebuilding.
       - ./uploads:/app/uploads
       - ./logs:/app/api/logs
       - ./skill:/app/skill
