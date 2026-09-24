@@ -32,6 +32,7 @@ const {
   getToolInputValidationDetails,
   captureSubagentIdentity,
   collectToolCallIds,
+  createProviderWebSearchBridge,
 } = require('@librechat/api');
 const { processFileCitations } = require('~/server/services/Files/Citations');
 const { processCodeOutput, runPreviewFinalize } = require('~/server/services/Files/Code/process');
@@ -392,6 +393,9 @@ function feedSubagentAggregator(aggregator, event) {
  * @param {Array<TTokenUsageEvent>} [options.usageEmitSink] - Array collecting each emitted
  *   `on_token_usage` payload (incl. cost) so the response's usage rollup can be persisted.
  * @param {(toolName: string, agentId?: string) => string | undefined} [options.resolveMcpServerName]
+ * @param {boolean} [options.providerWebSearchIndicator] - Surface a provider-executed built-in
+ *   `web_search` (OpenAI Responses API and compatible gateways such as Qwen) as a real
+ *   `web_search` tool step, so the client renders its search card. Defaults to `true`.
  * @returns {Record<string, t.EventHandler>} The default handlers.
  * @throws {Error} If the request is not found.
  */
@@ -414,6 +418,7 @@ function getDefaultHandlers({
   usageEmitSink = null,
   eventChildActivity = null,
   resolveMcpServerName = null,
+  providerWebSearchIndicator = true,
 }) {
   if (!res || !aggregateContent) {
     throw new Error(
@@ -512,6 +517,57 @@ function getDefaultHandlers({
     }
     return emitForJob({ event: UsageEvents.ON_TOKEN_USAGE, data: payload });
   };
+  /**
+   * Runnable metadata of the chunk currently being observed. The bridge's
+   * synthesized completion/closure events are dispatched back through the
+   * handlers below, which read `run_id` / `thread_id` / `agent_id` off metadata
+   * exactly as they do for a real step; forwarding it keeps a synthesized event
+   * indistinguishable from one the graph emitted. Assigned before `handleChunk`
+   * is awaited, so it is always the metadata of the chunk that triggered it.
+   */
+  let observedStreamMetadata;
+
+  /**
+   * Providers that execute `web_search` themselves (OpenAI's Responses API and
+   * the compatible gateways that mirror it, Qwen among them) report it as output
+   * items LangChain parks on `additional_kwargs.tool_outputs` /
+   * `generationInfo.tool_outputs` instead of tool-call chunks. The SDK's stream
+   * dispatcher reads only the latter, so no `tool_calls` step is ever created
+   * and the client's search card never mounts — the model browses invisibly.
+   *
+   * The bridge watches the raw chunk echo and synthesizes the step the SDK
+   * would have dispatched. It is created unconditionally so `ON_RUN_STEP` can
+   * always consult it for the authoritative index; when the indicator is off it
+   * simply never observes a chunk, injects nothing, and its index resolution is
+   * the identity.
+   */
+  const providerWebSearchBridge = createProviderWebSearchBridge({
+    aggregateContent,
+    stepMap,
+    emit: emitForJob,
+    /**
+     * Completion and closure re-enter the registered handlers below instead of
+     * going straight to the client, so a synthesized step is persisted exactly
+     * like a real one: `ON_RUN_STEP_COMPLETED` folds `result.tool_call` (the
+     * output the card renders as sources) into the aggregated part and stamps
+     * `stepId`, and `ON_RUN_STEP_CLOSED` stamps `runStepStatus` and
+     * `runStepDurationMs`. Emitting raw would persist a part with none of them,
+     * so a reload or a resumable reconnect would show the search card frozen
+     * mid-flight. `handlers` is read at call time — it is initialized below, and
+     * the first chunk cannot arrive before this function returns.
+     */
+    dispatch: ({ event, data }) => {
+      const handler = handlers[event];
+      return handler?.handle
+        ? handler.handle(event, data, observedStreamMetadata)
+        : emitForJob({ event, data });
+    },
+    events: {
+      runStep: GraphEvents.ON_RUN_STEP,
+      runStepCompleted: GraphEvents.ON_RUN_STEP_COMPLETED,
+      runStepClosed: GraphEvents.ON_RUN_STEP_CLOSED,
+    },
+  });
   const handlers = {
     [GraphEvents.CHAT_MODEL_END]: new ModelEndHandler(
       collectedUsage,
@@ -541,6 +597,14 @@ function getDefaultHandlers({
           }
         }
         aggregateContent({ event, data });
+        /**
+         * A synthesized provider web-search step occupies a persisted slot the
+         * graph never allocated, after which the graph's own indices lag the
+         * persisted ones by the number of injections. `stepMap` holds the
+         * authoritative slot — the same source `ON_RUN_STEP_CLOSED` already
+         * trusts. In a run with no injection this returns the identical object.
+         */
+        data = providerWebSearchBridge.resolveRunStepEvent(data);
         if (data?.stepDetails.type === StepTypes.TOOL_CALLS) {
           await emitForJob({ event, data });
           await maybeEmitSandboxStarting(emitForJob, data, metadata);
@@ -711,6 +775,32 @@ function getDefaultHandlers({
 
   if (toolExecuteOptions) {
     handlers[GraphEvents.ON_TOOL_EXECUTE] = createToolExecuteHandler(toolExecuteOptions);
+  }
+
+  if (providerWebSearchIndicator) {
+    /**
+     * An observer, never a dispatcher. The SDK identifies its own stream
+     * handler by the `SDK_STREAM_DISPATCH` capability symbol; this one is
+     * unbranded, so `getRegisteredDefaultChatStreamHandler` still returns
+     * `undefined` and the SDK keeps constructing and driving its internal
+     * `ChatModelStreamHandler` — including the cooperative-sealing path that
+     * an unbranded observer must not disable.
+     */
+    handlers[GraphEvents.CHAT_MODEL_STREAM] = {
+      /**
+       * @param {string} event - The event name.
+       * @param {{ chunk?: unknown }} data - The raw LangChain chunk envelope.
+       * @param {GraphRunnableConfig['configurable']} [metadata] The runnable metadata.
+       */
+      handle: async (event, data, metadata) => {
+        observedStreamMetadata = metadata;
+        await providerWebSearchBridge.handleChunk(data?.chunk, {
+          runId: metadata?.run_id,
+          agentId: metadata?.agent_id ?? metadata?.agentId,
+          agentName: metadata?.name,
+        });
+      },
+    };
   }
 
   handlers[GraphEvents.ON_SUBAGENT_UPDATE] = {

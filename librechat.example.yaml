@@ -1193,6 +1193,21 @@ endpoints:
 #   jinaApiUrl: '${JINA_API_URL}'  # Custom Jina API URL (optional, defaults to https://api.jina.ai/v1/rerank)
 #   # Other rerankers
 #   cohereApiKey: '${COHERE_API_KEY}'
+#   # Show a search card when the *provider* runs its own built-in `web_search`
+#   # (OpenAI's Responses API, and compatible gateways such as Qwen's
+#   # `compatible-mode`). Those searches happen entirely server-side and arrive
+#   # as output items rather than tool calls, so without this the model browses
+#   # with no visible indication. Presentation only — no request, token or cost
+#   # effect. Distinct from the plugin providers below, which LibreChat runs.
+#   providerIndicator: true
+#   # Declare that browsing is executed by the model provider itself rather than
+#   # by the plugin credentials below (Qwen's built-in `web_search`, OpenAI's
+#   # Responses API tool, and the gateways that mirror them). The server then
+#   # reports every credential category as system-defined, which is the signal
+#   # the client uses to hide the settings gear beside the Web search toggle and
+#   # pin it — so the toggle works like Memory, with no API-key form. Default
+#   # false, which keeps the gear and the plugin credential flow.
+#   providerNative: false
 #   # Search providers
 #   serperApiKey: '${SERPER_API_KEY}'
 #   searxngInstanceUrl: '${SEARXNG_INSTANCE_URL}'

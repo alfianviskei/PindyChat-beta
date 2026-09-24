@@ -1815,6 +1815,8 @@ const initializeClientWithProvider = async ({
     usageEmitSink,
     eventChildActivity,
     resolveMcpServerName,
+    /** `webSearch.providerIndicator` in `librechat.yaml`; on unless explicitly disabled. */
+    providerWebSearchIndicator: appConfig?.webSearch?.providerIndicator !== false,
   });
 
   const client = new AgentClient({

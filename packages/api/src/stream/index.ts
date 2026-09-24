@@ -83,3 +83,20 @@ export { RedisJobStore } from './implementations/RedisJobStore';
 export { RedisEventTransport } from './implementations/RedisEventTransport';
 
 export { waitForGenerationPersistence } from './persistence';
+
+// Provider-executed built-in web search (OpenAI Responses API and compatible
+// gateways). Pure signal reader + the run-step bridge that surfaces it as the
+// same `web_search` tool card the plugin renders.
+export {
+  createProviderWebSearchBridge,
+  isTerminalProviderWebSearchStatus,
+  readProviderWebSearchItem,
+  readProviderWebSearchSignals,
+} from './providerWebSearch';
+export type {
+  ProviderWebSearchBridge,
+  ProviderWebSearchBridgeDeps,
+  ProviderWebSearchIdentity,
+  ProviderWebSearchSignal,
+  ProviderWebSearchStatus,
+} from './providerWebSearch';
