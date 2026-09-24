@@ -1835,6 +1835,14 @@ const sttOpenaiSchema = z.object({
   apiKey: z.string(),
   apiKeyPreview: apiKeyPreviewSchema,
   model: z.string(),
+  /**
+   * Longest recording the provider will accept, in seconds. Providers cap this
+   * (Qwen's ASR stops at five minutes) and answer an over-long upload with a
+   * transport error the client surfaces as a bare 500. Measuring the file first
+   * turns that into a 400 naming the limit. `0` disables the check; unset
+   * applies the documented default.
+   */
+  maxDurationSeconds: z.number().int().min(0).optional(),
 });
 
 const sttAzureOpenAISchema = z.object({
@@ -1843,6 +1851,7 @@ const sttAzureOpenAISchema = z.object({
   apiKeyPreview: apiKeyPreviewSchema,
   deploymentName: z.string(),
   apiVersion: z.string(),
+  maxDurationSeconds: z.number().int().min(0).optional(),
 });
 
 const sttSchema = z.object({
@@ -2527,6 +2536,33 @@ export function normalizeSearxngEngines(engines?: string | string[]): string | u
 }
 
 export const webSearchSchema = z.object({
+  /**
+   * Surfaces a provider-executed built-in `web_search` — OpenAI's Responses API
+   * and the OpenAI-compatible gateways that mirror it, Qwen's `compatible-mode`
+   * among them — as the same search card the plugin above renders.
+   *
+   * Those searches run entirely on the provider's side and LangChain never
+   * converts their output items into tool-call chunks, so without this the
+   * model browses invisibly: the answer arrives with sources and no indication
+   * a search happened. It is a pure presentation affordance with no request,
+   * token or cost effect, which is why it ships on rather than reproducing the
+   * previous silent behavior.
+   */
+  providerIndicator: z.boolean().optional().default(true),
+  /**
+   * Declares that browsing is performed by the model provider itself rather
+   * than by the plugin below — Qwen's `web_search` built-in tool, OpenAI's
+   * Responses API tool, and the gateways that mirror them.
+   *
+   * The plugin's credentials (search provider, scraper, reranker) are then
+   * unreachable dead weight: the toggle still works, but the gear beside it
+   * opens a form whose keys nothing will ever read. Turning this on reports
+   * every credential category as `SYSTEM_DEFINED`, which is the same signal an
+   * operator-supplied `SERPER_API_KEY` produces, so the client hides the gear
+   * (`ToolsDropdown.tsx:103-107`) and pins the toggle without any client
+   * change. Off by default, reproducing today's behavior.
+   */
+  providerNative: z.boolean().optional().default(false),
   allowedAddresses: allowedAddressesSchema,
   serperApiKey: z.string().optional().default('${SERPER_API_KEY}'),
   serperApiKeyPreview: apiKeyPreviewSchema,
