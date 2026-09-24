@@ -4,6 +4,7 @@ const {
   checkAccess,
   assertDirectToolOutputAllowed,
   loadWebSearchAuth,
+  getProviderNativeWebSearchAuth,
   isContentFilterError,
   isActiveExpirationDate,
   getConversationExpirationDate,
@@ -48,6 +49,25 @@ const verifyWebSearchAuth = async (req, res) => {
     const userId = req.user.id;
     /** @type {TCustomConfig['webSearch']} */
     const webSearchConfig = appConfig?.webSearch || {};
+
+    /**
+     * Provider-native browsing (Qwen's built-in `web_search`, OpenAI's Responses
+     * API tool) never reads a plugin credential, so probing for one only yields
+     * a gear that opens an unusable form. Report the categories as
+     * system-defined instead; the client hides the gear and pins the toggle on
+     * that signal alone.
+     */
+    if (webSearchConfig.providerNative === true) {
+      const native = getProviderNativeWebSearchAuth();
+      return res.status(200).json({
+        authenticated: native.authenticated,
+        authTypes: native.authTypes,
+        searchProvider: native.authResult.searchProvider,
+        scraperProvider: native.authResult.scraperProvider,
+        rerankerType: native.authResult.rerankerType,
+      });
+    }
+
     const result = await loadWebSearchAuth({
       userId,
       loadAuthValues,

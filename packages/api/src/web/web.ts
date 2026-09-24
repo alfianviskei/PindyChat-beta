@@ -662,3 +662,29 @@ export async function loadWebSearchAuth({
     authenticated,
   };
 }
+
+/**
+ * Reports the search credential categories as already satisfied for a
+ * deployment whose browsing is executed by the model provider itself
+ * (`webSearch.providerNative`), where no plugin credential can ever be read.
+ *
+ * Every category is marked `SYSTEM_DEFINED` — the same signal an
+ * operator-supplied key produces — so the client hides the settings gear and
+ * pins the toggle without a client-side change. `authResult` stays empty:
+ * there is no secret to hand back, and echoing one would be a lie.
+ *
+ * @returns The auth payload `verifyWebSearchAuth` would otherwise compute.
+ */
+export function getProviderNativeWebSearchAuth(): WebSearchAuthResult {
+  const categories = [
+    SearchCategories.PROVIDERS,
+    SearchCategories.SCRAPERS,
+    SearchCategories.RERANKERS,
+  ] as const;
+
+  return {
+    authenticated: true,
+    authTypes: categories.map((category) => [category, AuthType.SYSTEM_DEFINED]),
+    authResult: {},
+  };
+}
