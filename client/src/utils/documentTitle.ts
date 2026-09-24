@@ -1,7 +1,8 @@
 import { LocalStorageKeys } from 'librechat-data-provider';
+import { APP_NAME } from '~/constants/brand';
 
 export const CHAT_TITLE_IN_TAB_KEY = 'chatTitleInTab';
-export const DEFAULT_APP_TITLE = 'PindyChat';
+export const DEFAULT_APP_TITLE = APP_NAME;
 
 export const hasRealTitle = (title?: string | null): title is string =>
   title != null && title !== '' && title !== 'New Chat';

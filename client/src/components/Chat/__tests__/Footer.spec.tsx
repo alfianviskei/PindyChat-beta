@@ -2,6 +2,7 @@ import React from 'react';
 import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/extend-expect';
 import Footer from '../Footer';
+import { APP_NAME, APP_URL } from '~/constants/brand';
 
 jest.mock('react-gtm-module', () => ({
   __esModule: true,
@@ -23,10 +24,10 @@ jest.mock('~/hooks', () => ({
 }));
 
 describe('Footer', () => {
-  test('opens the default LibreChat site link in a new tab', () => {
+  test('opens the default product site link in a new tab', () => {
     render(<Footer startupConfig={null} />);
-    const link = screen.getByRole('link', { name: /LibreChat/ });
-    expect(link).toHaveAttribute('href', 'https://librechat.ai');
+    const link = screen.getByRole('link', { name: new RegExp(APP_NAME) });
+    expect(link).toHaveAttribute('href', APP_URL);
     expect(link).toHaveAttribute('target', '_blank');
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });

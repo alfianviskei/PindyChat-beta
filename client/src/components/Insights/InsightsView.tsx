@@ -29,6 +29,7 @@ import { useAuthContext, useDocumentTitle, useLocalize } from '~/hooks';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
 import { LocalizedDateRangePicker } from '~/components/ui';
 import { getRollingDateRange } from './dateRange';
+import { APP_NAME } from '~/constants/brand';
 import { cn } from '~/utils';
 
 type ShortcutRange = Exclude<InsightsRange, 'custom'>;
@@ -624,7 +625,7 @@ export default function InsightsView() {
   );
   const displayedAgentIds = pendingAgentIds ?? effectiveAgentIds;
 
-  useDocumentTitle(`${localize('com_insights_title')} | PindyChat`);
+  useDocumentTitle(`${localize('com_insights_title')} | ${APP_NAME}`);
 
   useEffect(
     () => () => {

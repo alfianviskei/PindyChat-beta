@@ -7,6 +7,7 @@ import { createRequire } from 'module';
 import { VitePWA } from 'vite-plugin-pwa';
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import { compression, defineAlgorithm } from 'vite-plugin-compression2';
+import { APP_NAME } from './src/constants/brand';
 import type { Plugin } from 'vite';
 
 const require = createRequire(import.meta.url);
@@ -151,11 +152,15 @@ export default defineConfig(({ command }) => ({
       },
       includeAssets: [],
       manifest: {
-        name: 'LibreChat',
-        short_name: 'LibreChat',
+        /** Installed-app name, read from the same constant the shell falls back
+         *  to, so the home-screen label and the tab title cannot disagree. */
+        name: APP_NAME,
+        short_name: APP_NAME,
         display: 'standalone',
         background_color: '#000000',
-        theme_color: '#009688',
+        /** The mark's own dominant fill, so the installed app's chrome matches
+         *  the artwork rather than inheriting an upstream accent. */
+        theme_color: '#2a5d7f',
         icons: [
           {
             src: 'assets/favicon-32x32.png',

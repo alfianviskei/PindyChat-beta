@@ -8,10 +8,10 @@ const DOCUMENT_VERSION = '0.1.0';
 export function buildAgentsOpenApiDocument(): Record<string, unknown> {
   return buildOpenApiDocument({
     info: {
-      title: 'LibreChat Agents API',
+      title: 'PindyChat Agents API',
       version: DOCUMENT_VERSION,
       description:
-        'The public agent and skill management endpoints of the LibreChat Agents API. This API is in beta and may change.',
+        'The public agent and skill management endpoints of the PindyChat Agents API. This API is in beta and may change.',
     },
     servers: [
       {

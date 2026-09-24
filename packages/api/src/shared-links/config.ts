@@ -78,7 +78,8 @@ export function buildSharedLinkStartupPayload(
   env: SharedLinkStartupEnv = process.env,
 ): TSharedLinkStartupConfig {
   const payload: TSharedLinkStartupConfig = {
-    appTitle: env.APP_TITLE || 'LibreChat',
+    /** Fallback mirrors `client/src/constants/brand.ts`; `APP_TITLE` wins when set. */
+    appTitle: env.APP_TITLE || 'PindyChat',
   };
 
   if (typeof env.ANALYTICS_GTM_ID === 'string') {

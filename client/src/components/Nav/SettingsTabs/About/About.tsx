@@ -4,6 +4,7 @@ import { Constants } from 'librechat-data-provider';
 import type { TStartupConfig } from 'librechat-data-provider';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useGetStartupConfig } from '~/data-provider';
+import { APP_NAME } from '~/constants/brand';
 import { useLocalize } from '~/hooks';
 
 const UNKNOWN_PLACEHOLDER = '—';
@@ -27,7 +28,7 @@ function buildDiagnosticsBlob(
   buildInfo: TStartupConfig['buildInfo'] | undefined,
 ): string {
   const lines: string[] = [
-    `PindyChat version: ${version}`,
+    `${APP_NAME} version: ${version}`,
     `Commit: ${buildInfo?.commit ?? UNKNOWN_PLACEHOLDER}`,
     `Branch: ${buildInfo?.branch ?? UNKNOWN_PLACEHOLDER}`,
     `Build date: ${formatBuildDate(buildInfo?.buildDate)}`,

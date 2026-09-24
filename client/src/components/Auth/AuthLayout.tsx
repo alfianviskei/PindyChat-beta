@@ -2,6 +2,7 @@ import { ThemeSelector } from '@librechat/client';
 import { TStartupConfig } from 'librechat-data-provider';
 import { ErrorMessage } from '~/components/Auth/ErrorMessage';
 import { TranslationKeys, useLocalize } from '~/hooks';
+import { APP_NAME } from '~/constants/brand';
 import SocialLoginRender from './SocialLoginRender';
 import { BlinkAnimation } from './BlinkAnimation';
 import { Banner } from '../Banners';
@@ -25,6 +26,9 @@ function AuthLayout({
   error: TranslationKeys | null;
 }) {
   const localize = useLocalize();
+
+  /** What the operator configured, or the product's own name until that arrives. */
+  const appTitle = startupConfig?.appTitle || APP_NAME;
 
   const hasStartupConfigError = startupConfigError !== null && startupConfigError !== undefined;
   const DisplayError = () => {
@@ -63,12 +67,25 @@ function AuthLayout({
     <div className="relative flex min-h-screen flex-col bg-surface-primary">
       <Banner />
       <BlinkAnimation active={isFetching}>
-        <div className="mt-6 h-10 w-full bg-cover">
+        {/* Mark and wordmark read as one unit. The `alt` already announces the
+            product to assistive tech, so the visible name is `aria-hidden`
+            rather than spoken a second time. Colour and weight come from the
+            same semantic tokens as the `<h1>` below — the page's only heading —
+            and the sizes step down on narrow viewports, where this band competes
+            with the form for a short screen. */}
+        <div className="mt-6 flex flex-col items-center gap-3 sm:gap-4">
           <img
             src="assets/logo.svg"
-            className="h-full w-full object-contain"
-            alt={localize('com_ui_logo', { 0: startupConfig?.appTitle ?? 'PindyChat' })}
+            className="h-24 w-24 object-contain sm:h-28 sm:w-28"
+            alt={localize('com_ui_logo', { 0: appTitle })}
           />
+          <span
+            aria-hidden="true"
+            className="text-2xl font-semibold tracking-tight text-text-primary sm:text-3xl"
+            style={{ userSelect: 'none' }}
+          >
+            {appTitle}
+          </span>
         </div>
       </BlinkAnimation>
       <DisplayError />

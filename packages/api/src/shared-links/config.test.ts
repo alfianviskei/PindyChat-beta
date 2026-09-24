@@ -115,7 +115,7 @@ describe('buildSharedLinkStartupPayload', () => {
           }),
           {},
         ),
-      ).toEqual({ appTitle: 'LibreChat', interface: { codeHighlightThrottleMs } });
+      ).toEqual({ appTitle: 'PindyChat', interface: { codeHighlightThrottleMs } });
     },
   );
 
@@ -156,6 +156,6 @@ describe('buildSharedLinkStartupPayload', () => {
       {},
     );
 
-    expect(payload).toEqual({ appTitle: 'LibreChat' });
+    expect(payload).toEqual({ appTitle: 'PindyChat' });
   });
 });

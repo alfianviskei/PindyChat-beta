@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import { Constants, hasConfiguredFooter } from 'librechat-data-provider';
 import type { TStartupConfig } from 'librechat-data-provider';
 import { useGetStartupConfig } from '~/data-provider';
+import { APP_NAME, APP_URL } from '~/constants/brand';
 import { useLocalize } from '~/hooks';
 
 type FooterProps = {
@@ -78,10 +79,7 @@ function Footer({ className, startupConfig, configuredOnly = false }: FooterProp
   /** The generic disclaimer is the part a conversation drops; operator content is not. */
   const genericFooter = configuredOnly
     ? ''
-    : '[PindyChat ' +
-      Constants.VERSION +
-      '](https://chat.pindyyogurt.store) - ' +
-      localize('com_ui_latest_footer');
+    : `[${APP_NAME} ${Constants.VERSION}](${APP_URL}) - ${localize('com_ui_latest_footer')}`;
   const mainContent = configuredFooter ?? genericFooter;
   const mainContentParts = mainContent === '' ? [] : mainContent.split('|');
 

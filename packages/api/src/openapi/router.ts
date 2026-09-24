@@ -27,7 +27,7 @@ const DOCS_HTML = `<!DOCTYPE html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>LibreChat Agents API</title>
+    <title>PindyChat Agents API</title>
     <script>
       window.addEventListener('DOMContentLoaded', function () {
         var apiBase = location.pathname.replace(/\\/+$/, '').replace(/\\/docs$/, '');
