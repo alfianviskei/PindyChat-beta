@@ -3,6 +3,7 @@ import type { ExtendedJsonSchema } from './schema';
 import { AskUserQuestionToolDefinition } from '~/agents/hitl/askUserQuestionTool';
 import { geminiToolkit } from '~/tools/toolkits/gemini';
 import { oaiToolkit } from '~/tools/toolkits/oai';
+import { qwenToolkit } from '~/tools/toolkits/qwen';
 
 export type { ExtendedJsonSchema } from './schema';
 
@@ -421,6 +422,13 @@ export const toolDefinitions: Record<string, ToolRegistryDefinition> = {
     schema: geminiToolkit.gemini_image_gen.schema,
     toolType: 'builtin',
     responseFormat: geminiToolkit.gemini_image_gen.responseFormat,
+  },
+  qwen_image_gen: {
+    name: qwenToolkit.qwen_image_gen.name,
+    description: qwenToolkit.qwen_image_gen.description,
+    schema: qwenToolkit.qwen_image_gen.schema,
+    toolType: 'builtin',
+    responseFormat: qwenToolkit.qwen_image_gen.responseFormat,
   },
 };
 

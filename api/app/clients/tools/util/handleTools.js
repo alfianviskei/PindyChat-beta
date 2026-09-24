@@ -52,6 +52,7 @@ const {
   TavilySearchResults,
   createGeminiImageTool,
   createOpenAIImageTools,
+  createQwenImageTool,
 } = require('../');
 const {
   createMCPTool,
@@ -263,6 +264,19 @@ const loadTools = async ({
         fileStrategy,
       });
     },
+    qwen_image_gen: async () => {
+      const authFields = getAuthFields('qwen_image_gen');
+      const authValues = await loadAuthValues({ userId: user, authFields, throwError: false });
+      return createQwenImageTool({
+        ...authValues,
+        isAgent: !!agent,
+        req: options.req,
+        userId: user,
+        fileStrategy,
+        processFileURL: options.processFileURL,
+        returnMetadata: options.returnMetadata,
+      });
+    },
   };
 
   const requestedTools = {};
@@ -293,6 +307,7 @@ const loadTools = async ({
     dalle: imageGenOptions,
     'stable-diffusion': imageGenOptions,
     gemini_image_gen: imageGenOptions,
+    qwen_image_gen: imageGenOptions,
   };
 
   /** @type {Record<string, string>} */

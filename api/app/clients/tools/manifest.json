@@ -173,5 +173,19 @@
         "optional": true
       }
     ]
+  },
+  {
+    "name": "Qwen Image Generation",
+    "pluginKey": "qwen_image_gen",
+    "description": "Generate images with Alibaba's Qwen image models (qwen-image-3.0-pro) over the DashScope multimodal-generation API.",
+    "icon": "assets/qwen.svg",
+    "authConfig": [
+      {
+        "authField": "QWEN_IMAGE_API_KEY||DASHSCOPE_API_KEY",
+        "label": "Qwen / DashScope API Key (optional)",
+        "description": "Leave blank to use the server's QWEN_IMAGE_API_KEY or DASHSCOPE_API_KEY environment variable.",
+        "optional": true
+      }
+    ]
   }
 ]
