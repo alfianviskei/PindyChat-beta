@@ -92,7 +92,7 @@ export function readProviderWebSearchItem(item: unknown): ProviderWebSearchSigna
    * card parses `output` as JSON to render sources; an empty string leaves it
    * in its "no sources reported" state rather than fabricating one.
    */
-  const results = item.results ?? item.sources ?? action?.results;
+  const results = item.results ?? item.sources ?? action?.results ?? action?.sources;
   let output: string | undefined;
   if (Array.isArray(results) && results.length > 0) {
     try {
