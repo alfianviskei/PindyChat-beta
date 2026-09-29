@@ -195,6 +195,10 @@ const Composer: ForwardRefExoticComponent<
         minRows={minRows}
         maxRows={maxRows}
         disabled={disabled}
+        /** Labels the soft keyboard's return key to match what it does, so a
+         *  key reading "Enter" never sends and one reading "Send" never
+         *  surprises by inserting a line break. */
+        enterKeyHint={submitOnEnter ? 'send' : 'enter'}
         /** Main chat's own field metrics (`ChatForm`'s `baseClasses`), so the
          *  two composers stand the same height and their surfaces line up
          *  when this panel is open beside the thread. */

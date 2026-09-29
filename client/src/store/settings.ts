@@ -39,6 +39,37 @@ function isSmallViewport(): boolean {
   return typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches;
 }
 
+/**
+ * Read synchronously for the same reason. A soft keyboard has no Ctrl/⌘ and
+ * most expose a single return key, so "Enter to send" leaves touch users no
+ * reachable chord for a line break: Enter has to insert one there, with the
+ * send button submitting. Keyed on the primary pointer rather than viewport
+ * width so a narrowed desktop window keeps Enter-to-send.
+ */
+function hasCoarsePointer(): boolean {
+  return typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches;
+}
+
+/**
+ * One-shot marker. Phones that visited before the touch default existed carry
+ * `enterToSend: true` inherited from the desktop default, not chosen, and a
+ * default alone cannot dislodge a stored value. Flipping it once restores the
+ * reachable newline; the marker then keeps any later explicit choice — either
+ * way — from being overwritten again.
+ */
+const ENTER_TO_SEND_TOUCH_MIGRATED_KEY = 'enterToSendTouchMigrated';
+
+function migrateTouchEnterToSend(saved: boolean): boolean {
+  if (!hasCoarsePointer()) {
+    return saved;
+  }
+  if (localStorage.getItem(ENTER_TO_SEND_TOUCH_MIGRATED_KEY) === '1') {
+    return saved;
+  }
+  localStorage.setItem(ENTER_TO_SEND_TOUCH_MIGRATED_KEY, '1');
+  return false;
+}
+
 const localStorageAtoms = {
   // General settings
   sidebarExpanded: atomWithLocalStorage(
@@ -61,7 +92,7 @@ const localStorageAtoms = {
   chatTitleInTab: atomWithLocalStorage(CHAT_TITLE_IN_TAB_KEY, true),
 
   // Chat settings
-  enterToSend: atomWithLocalStorage('enterToSend', true),
+  enterToSend: atomWithLocalStorage('enterToSend', !hasCoarsePointer(), migrateTouchEnterToSend),
   /** What Enter does while a run is generating: steer (inject mid-run) or queue (send after). */
   duringRunDefaultAction: atomWithLocalStorage<'steer' | 'queue'>(
     'duringRunDefaultAction',

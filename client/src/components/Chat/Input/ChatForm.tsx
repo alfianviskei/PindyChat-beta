@@ -170,6 +170,7 @@ const ChatForm = memo(function ChatForm({
   const automaticPlayback = useRecoilValue(store.automaticPlayback);
   const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
   const isTemporary = useRecoilValue(store.isTemporary);
+  const enterToSend = useRecoilValue(store.enterToSend);
 
   const [badges, setBadges] = useRecoilState(store.chatBadges);
   const [isEditingBadges, setIsEditingBadges] = useRecoilState(store.isEditingBadges);
@@ -790,6 +791,8 @@ const ChatForm = memo(function ChatForm({
                         : undefined
                     }
                   >
+                    {/* The soft keyboard's return key is labelled to match what it
+                        actually does, so a key reading "Enter" never sends. */}
                     <TextareaAutosize
                       {...registerProps}
                       ref={(e) => {
@@ -814,6 +817,7 @@ const ChatForm = memo(function ChatForm({
                       id={mainTextareaId}
                       tabIndex={0}
                       data-testid="text-input"
+                      enterKeyHint={enterToSend ? 'send' : 'enter'}
                       rows={1}
                       onFocus={handleTextareaFocus}
                       onBlur={handleTextareaBlur}
