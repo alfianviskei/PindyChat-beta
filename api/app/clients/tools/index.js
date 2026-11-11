@@ -1,7 +1,6 @@
 const manifest = require('./manifest');
 
 // Structured Tools
-const DALLE3 = require('./structured/DALLE3');
 const FluxAPI = require('./structured/FluxAPI');
 const OpenWeather = require('./structured/OpenWeather');
 const StructuredWolfram = require('./structured/Wolfram');
@@ -17,7 +16,6 @@ const createQwenImageTool = require('./structured/QwenImageGen');
 module.exports = {
   ...manifest,
   // Structured Tools
-  DALLE3,
   FluxAPI,
   OpenWeather,
   StructuredSD,

@@ -19,7 +19,6 @@ import {
   toCatalogConnectionConfig,
   applyRequestHeaders,
   hasRuntimeContextPlaceholders,
-  getRuntimeBodyPlaceholderFields,
   getMissingRuntimeBodyPlaceholderFields,
   isUserSourced,
   validateMCPServerConfig,
@@ -75,7 +74,7 @@ describe('splitMCPToolKey', () => {
     // before LibreChat appends its own "_mcp_gitlab" suffix. A naive
     // `.split(delimiter)` produces 3 segments here and silently drops the
     // 3rd, yielding a bogus server name ("server_version" instead of
-    // "gitlab"). See https://github.com/danny-avila/LibreChat/issues/14440
+    // "gitlab"). See https://github.com/LibreChat-AI/LibreChat/issues/14440
     expect(splitMCPToolKey('gitlab-get_mcp_server_version_mcp_gitlab')).toEqual([
       'gitlab-get_mcp_server_version',
       'gitlab',
@@ -293,6 +292,28 @@ describe('redactServerSecrets', () => {
     expect(redacted.oauth?.client_secret).toBeUndefined();
     expect(redacted.oauth?.client_id).toBe('my-client');
     expect(redacted.oauth?.scope).toBe('read');
+  });
+
+  it('never returns the masked previews the admin config API stores beside the secrets', () => {
+    const config: ParsedServerConfig = {
+      type: 'sse',
+      url: 'https://example.com/mcp',
+      apiKey: {
+        source: 'admin',
+        authorization_type: 'bearer',
+        key: 'decrypted-at-runtime',
+        keyPreview: '...time',
+      },
+      oauth: {
+        client_id: 'cid',
+        client_secret: 'decrypted-oauth-secret',
+        client_secretPreview: '...cret',
+      },
+    };
+    const redacted = redactServerSecrets(config);
+    expect(redacted.apiKey).toEqual({ source: 'admin', authorization_type: 'bearer' });
+    expect(redacted.oauth).toEqual({ client_id: 'cid' });
+    expect(JSON.stringify(redacted)).not.toMatch(/time|cret/);
   });
 
   it('should strip both apiKey.key and oauth.client_secret simultaneously', () => {
@@ -910,7 +931,7 @@ describe('getMCPRequestScope', () => {
         headers: { 'X-Message': `\${${envName}}` },
       };
       expect(getMCPRequestScope(config).requestScoped).toBe(true);
-      expect(getRuntimeBodyPlaceholderFields(config)).toEqual(['messageId']);
+      expect(getMCPRequestScope(config).requiredBodyFields).toEqual(['messageId']);
     } finally {
       if (previous == null) {
         delete process.env[envName];
@@ -939,7 +960,7 @@ describe('getMCPRequestScope', () => {
     expect(hasRuntimeContextPlaceholders(config)).toBe(false);
     expect(hasRuntimeUrlPlaceholders(config)).toBe(false);
     expect(getMCPRequestScope(config).requestScoped).toBe(false);
-    expect(getRuntimeBodyPlaceholderFields(config)).toEqual([]);
+    expect(getMCPRequestScope(config).requiredBodyFields).toEqual([]);
     expect(getMissingRuntimeBodyPlaceholderFields(config)).toEqual([]);
     expect(requiresEphemeralUserConnection(config)).toBe(false);
     expect(requiresUserScopedConnection(config)).toBe(false);
@@ -957,7 +978,7 @@ describe('getMCPRequestScope', () => {
     expect(hasRuntimeContextPlaceholders(config)).toBe(false);
     expect(hasRuntimeUrlPlaceholders(config)).toBe(false);
     expect(getMCPRequestScope(config).requestScoped).toBe(false);
-    expect(getRuntimeBodyPlaceholderFields(config)).toEqual([]);
+    expect(getMCPRequestScope(config).requiredBodyFields).toEqual([]);
     expect(getMissingRuntimeBodyPlaceholderFields(config)).toEqual([]);
     expect(requiresEphemeralUserConnection(config)).toBe(false);
     expect(requiresUserScopedConnection(config)).toBe(false);
@@ -975,7 +996,7 @@ describe('getMissingRuntimeBodyPlaceholderFields', () => {
   } as const;
 
   it('returns the request body fields required by trusted runtime placeholders', () => {
-    expect(getRuntimeBodyPlaceholderFields(config)).toEqual([
+    expect(getMCPRequestScope(config).requiredBodyFields).toEqual([
       'messageId',
       'parentMessageId',
       'conversationId',
@@ -1575,46 +1596,74 @@ describe('waitUntilDeadline', () => {
   });
 });
 
-describe('shadowed generated user API keys', () => {
-  const config: ParsedServerConfig = {
-    type: 'streamable-http',
-    url: 'https://mcp.example.test/mcp',
-    apiKey: { source: 'user', authorization_type: 'bearer' },
-    headers: { Authorization: 'Bearer {{MCP_API_KEY}}' },
-    requestHeaders: { authorization: 'Bearer request-secret' },
-    customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Generated key' } },
-  };
-
-  it('removes only the unused generated requirement and preserves the declaration', () => {
-    expect(hasCustomUserVars(config)).toBe(false);
-    expect(getMissingCustomUserVars(config)).toEqual([]);
-    const effective = applyRequestHeaders(config);
-    expect(effective.customUserVars).toEqual({});
-    expect(getMissingCustomUserVars(effective)).toEqual([]);
-    expect(applyRequestHeaders(effective)).toBe(effective);
-    expect(getMissingCustomUserVars(toCatalogConnectionConfig(config))).toEqual(['MCP_API_KEY']);
-    expect(config.customUserVars).toHaveProperty('MCP_API_KEY');
-  });
-
-  it.each([
-    { requestHeaders: { authorization: 'Bearer {{MCP_API_KEY}}' } },
-    { headers: { Authorization: 'Bearer {{MCP_API_KEY}}', 'X-Key': '{{MCP_API_KEY}}' } },
-    { url: 'https://mcp.example.test/{{MCP_API_KEY}}' },
-    { oauth_headers: { 'X-Key': '{{MCP_API_KEY}}' } },
-    { requestHeaders: { 'X-Unrelated': 'value' } },
-  ])('retains a key referenced by the effective configuration: %j', (fields) => {
-    expect(getMissingCustomUserVars({ ...config, ...fields })).toEqual(['MCP_API_KEY']);
-  });
-
-  it('retains explicitly declared variables', () => {
-    const declared = {
-      ...config,
-      customUserVars: {
-        ...config.customUserVars,
-        REGION: { title: 'Region', description: 'Required region' },
-      },
+describe.each(['MCP_API_KEY', `MCP_API_KEY_${'a'.repeat(64)}`])(
+  'shadowed generated user API key %s',
+  (variable) => {
+    const config: ParsedServerConfig = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.test/mcp',
+      apiKey: { source: 'user', authorization_type: 'bearer' },
+      headers: { Authorization: `Bearer {{${variable}}}` },
+      requestHeaders: { authorization: 'Bearer request-secret' },
+      customUserVars: { [variable]: { title: 'API Key', description: 'Generated key' } },
     };
-    expect(getMissingCustomUserVars(declared)).toEqual(['REGION']);
-    expect(hasCustomUserVars(declared)).toBe(true);
-  });
-});
+
+    it('removes only the unused generated requirement and preserves the declaration', () => {
+      expect(hasCustomUserVars(config)).toBe(false);
+      expect(getMissingCustomUserVars(config)).toEqual([]);
+      const effective = applyRequestHeaders(config);
+      expect(effective.customUserVars).toEqual({});
+      expect(getMissingCustomUserVars(effective)).toEqual([]);
+      expect(applyRequestHeaders(effective)).toBe(effective);
+      expect(getMissingCustomUserVars(toCatalogConnectionConfig(config))).toEqual([variable]);
+      expect(config.customUserVars).toHaveProperty(variable);
+    });
+
+    it.each([
+      { requestHeaders: { authorization: `Bearer {{${variable}}}` } },
+      { headers: { Authorization: `Bearer {{${variable}}}`, 'X-Key': `{{${variable}}}` } },
+      { url: `https://mcp.example.test/{{${variable}}}` },
+      { oauth_headers: { 'X-Key': `{{${variable}}}` } },
+      { oauth: { client_id: `{{${variable}}}` } },
+      { args: [`{{${variable}}}`] },
+      { env: { API_KEY: `{{${variable}}}` } },
+      { requestHeaders: { 'X-Unrelated': 'value' } },
+    ])('retains a key referenced by the effective configuration: %j', (fields) => {
+      expect(getMissingCustomUserVars({ ...config, ...fields })).toEqual([variable]);
+    });
+
+    it('retains explicitly declared variables', () => {
+      const declared = {
+        ...config,
+        customUserVars: {
+          ...config.customUserVars,
+          REGION: { title: 'Region', description: 'Required region' },
+          MCP_API_KEY_EXTRA: { title: 'Explicit', description: 'Not a generated key' },
+        },
+      };
+      expect(getMissingCustomUserVars(declared)).toEqual(['REGION', 'MCP_API_KEY_EXTRA']);
+      expect(hasCustomUserVars(declared)).toBe(true);
+    });
+    it('retains explicit keys outside user API-key authentication', () => {
+      expect(getMissingCustomUserVars({ ...config, apiKey: undefined })).toEqual([variable]);
+    });
+
+    it('retains a custom-header key when the override still uses it', () => {
+      const declared = {
+        ...config,
+        apiKey: {
+          source: 'user' as const,
+          authorization_type: 'custom' as const,
+          custom_header: 'X-Key',
+        },
+        headers: { 'X-Key': `{{${variable}}}` },
+        requestHeaders: { 'x-key': 'request-secret' },
+      };
+      expect(getMissingCustomUserVars(declared)).toEqual([]);
+      expect(getMissingCustomUserVars(toCatalogConnectionConfig(declared))).toEqual([variable]);
+      expect(
+        getMissingCustomUserVars({ ...declared, requestHeaders: { 'x-key': `{{${variable}}}` } }),
+      ).toEqual([variable]);
+    });
+  },
+);

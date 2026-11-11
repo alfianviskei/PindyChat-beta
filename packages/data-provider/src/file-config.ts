@@ -2,10 +2,13 @@ import { z } from 'zod';
 import type { EndpointFileConfig, FileConfig, RegexLike } from './types/files';
 import type { ResponsesApiRouting } from './types';
 import { EModelEndpoint, isAgentsEndpoint, isDocumentSupportedProvider } from './schemas';
+import { gpt6Tier, gptPointReleaseFamily } from './families';
 import { normalizeEndpointName } from './utils';
 
 /** Parallel storage deletions during rollback of a failed skill archive import. */
 export const DEFAULT_SKILL_IMPORT_CLEANUP_CONCURRENCY = 8;
+/** Parallel provider deletions during a whole-Skill cleanup pass. */
+export const DEFAULT_SKILL_DELETION_CLEANUP_CONCURRENCY = 8;
 
 export const supportsFiles = {
   [EModelEndpoint.openAI]: true,
@@ -239,7 +242,7 @@ export const resolveUseResponsesApi = (
  * this shared with client upload routing so documents follow the API that the
  * backend will actually invoke. Explicit false remains an opt-out. */
 export const prefersResponsesApiByModel = (model?: string | null): boolean =>
-  typeof model === 'string' && /^gpt-6-(?:astra|sol|luna)(?:-|$)/i.test(model);
+  gpt6Tier(model) != null;
 
 /** The server has transport and administrator settings the browser cannot see.
  * Missing policy never enables model-based uploads (including during upgrades). */
@@ -260,9 +263,17 @@ export const resolveEffectiveUseResponsesApi = ({
     return value ?? undefined;
   }
   let policy = model ? routing?.[model] : undefined;
-  if (!policy && model && prefersResponsesApiByModel(model)) {
-    const family = /^gpt-6-(?:astra|sol|luna)(?=-|$)/i.exec(model)?.[0].toLowerCase();
-    policy = family ? routing?.[`${family}-*`] : undefined;
+  /** A native point release follows its family until the server lists it. Azure
+   * routing is keyed by configured deployments, so a family's policy there says
+   * nothing about a release that is not deployed. */
+  const releaseFamily =
+    endpoint === EModelEndpoint.openAI && model ? gptPointReleaseFamily(model) : undefined;
+  if (!policy && releaseFamily) {
+    policy = routing?.[releaseFamily];
+  }
+  const tier = gpt6Tier(model);
+  if (!policy && tier) {
+    policy = routing?.[`gpt-6-${tier}-*`];
   }
   policy ??= routing?.['*'];
   if (!policy) return value ?? undefined;
@@ -555,6 +566,8 @@ const assistantsFileConfig = {
 };
 
 export const fileConfig = {
+  retainedFileCleanup: false,
+  vectorDeletionConcurrency: 4,
   endpoints: {
     [EModelEndpoint.assistants]: assistantsFileConfig,
     [EModelEndpoint.azureAssistants]: assistantsFileConfig,
@@ -577,6 +590,7 @@ export const fileConfig = {
   skills: {
     fileSizeLimit: defaultSkillImportSizeLimit,
     importCleanupConcurrency: DEFAULT_SKILL_IMPORT_CLEANUP_CONCURRENCY,
+    deletionCleanupConcurrency: DEFAULT_SKILL_DELETION_CLEANUP_CONCURRENCY,
   },
   serverFileSizeLimit: defaultSizeLimit,
   avatarSizeLimit: mbToBytes(2),
@@ -624,7 +638,7 @@ export type TDefaultLLMDeliveryPath = z.infer<typeof DefaultLLMDeliveryPath>;
 
 export const defaultLLMDeliveryPathSchema = z.object({
   fallback: DefaultLLMDeliveryPath.optional(),
-  overrides: z.record(DefaultLLMDeliveryPath).optional(),
+  overrides: z.record(z.string(), DefaultLLMDeliveryPath).optional(),
 });
 export type TDefaultLLMDeliveryPathConfig = z.infer<typeof defaultLLMDeliveryPathSchema>;
 type TDeliveryPathOverrides = NonNullable<TDefaultLLMDeliveryPathConfig['overrides']>;
@@ -643,10 +657,16 @@ export const endpointFileConfigSchema = z.object({
 const skillFileConfigSchema = z.object({
   fileSizeLimit: z.number().min(0).optional(),
   importCleanupConcurrency: z.number().int().positive().optional(),
+  deletionCleanupConcurrency: z.number().int().positive().optional(),
 });
 
 export const fileConfigSchema = z.object({
-  endpoints: z.record(endpointFileConfigSchema).optional(),
+  /** Enable only after every replica and rollback target reads retained file destinations. */
+  retainedFileCleanup: z.boolean().optional(),
+  /** UTC cutoff chosen after all legacy writers and rollback targets are retired. */
+  vectorOwnershipTrackingStart: z.string().datetime().optional(),
+  vectorDeletionConcurrency: z.number().int().min(1).max(16).optional(),
+  endpoints: z.record(z.string(), endpointFileConfigSchema).optional(),
   skills: skillFileConfigSchema.optional(),
   serverFileSizeLimit: z.number().min(0).optional(),
   avatarSizeLimit: z.number().min(0).optional(),
@@ -654,6 +674,7 @@ export const fileConfigSchema = z.object({
   fileContextSizeLimit: z.number().min(0).optional(),
   fileContextCharLimit: z.number().min(0).optional(),
   codeEnvLivenessSafeWindowMs: z.number().min(0).optional(),
+  legacySearchProbeTimeoutMs: z.number().min(1).optional(),
   imageGeneration: z
     .object({
       percentage: z.number().min(0).max(100).optional(),
@@ -693,9 +714,17 @@ export type TFileConfig = z.infer<typeof fileConfigSchema>;
  */
 let compileMimeRegex: (pattern: string) => RegexLike = (pattern) => new RegExp(pattern);
 
+type DynamicFileConfig = z.infer<typeof fileConfigSchema>;
+
+/** Merged results are memoized per `dynamic` object identity; callers must treat them as read-only. */
+let mergedConfigCache = new WeakMap<DynamicFileConfig, FileConfig>();
+let staticMergedConfig: FileConfig | undefined;
+
 /** Override the MIME-pattern compiler; the server injects a linear-time engine at startup. */
 export const setFileConfigRegexCompiler = (compile: (pattern: string) => RegexLike): void => {
   compileMimeRegex = compile;
+  mergedConfigCache = new WeakMap();
+  staticMergedConfig = undefined;
 };
 
 /** Returned when every configured pattern fails to compile, so consumers that read an empty
@@ -1211,7 +1240,19 @@ export function getEndpointFileConfig(params: {
   return defaultConfig;
 }
 
-export function mergeFileConfig(dynamic: z.infer<typeof fileConfigSchema> | undefined): FileConfig {
+export function mergeFileConfig(dynamic: DynamicFileConfig | undefined): FileConfig {
+  if (!dynamic) {
+    return (staticMergedConfig ??= buildMergedFileConfig(undefined));
+  }
+  let merged = mergedConfigCache.get(dynamic);
+  if (!merged) {
+    merged = buildMergedFileConfig(dynamic);
+    mergedConfigCache.set(dynamic, merged);
+  }
+  return merged;
+}
+
+function buildMergedFileConfig(dynamic: DynamicFileConfig | undefined): FileConfig {
   const mergedConfig: FileConfig = {
     ...fileConfig,
     endpoints: {
@@ -1235,6 +1276,17 @@ export function mergeFileConfig(dynamic: z.infer<typeof fileConfigSchema> | unde
   };
   if (!dynamic) {
     return mergedConfig;
+  }
+
+  if (dynamic.retainedFileCleanup !== undefined) {
+    mergedConfig.retainedFileCleanup = dynamic.retainedFileCleanup;
+  }
+
+  if (dynamic.vectorOwnershipTrackingStart !== undefined) {
+    mergedConfig.vectorOwnershipTrackingStart = dynamic.vectorOwnershipTrackingStart;
+  }
+  if (dynamic.vectorDeletionConcurrency !== undefined) {
+    mergedConfig.vectorDeletionConcurrency = dynamic.vectorDeletionConcurrency;
   }
 
   if (dynamic.defaultLLMDeliveryPath !== undefined) {
@@ -1273,6 +1325,13 @@ export function mergeFileConfig(dynamic: z.infer<typeof fileConfigSchema> | unde
     mergedConfig.skills = {
       ...mergedConfig.skills,
       importCleanupConcurrency: dynamic.skills.importCleanupConcurrency,
+    };
+  }
+
+  if (dynamic.skills?.deletionCleanupConcurrency !== undefined) {
+    mergedConfig.skills = {
+      ...mergedConfig.skills,
+      deletionCleanupConcurrency: dynamic.skills.deletionCleanupConcurrency,
     };
   }
 
