@@ -52,20 +52,66 @@ Ada toggle **"Show Thinking"** di UI LibreChat:
 Web search memungkinkan model mencari informasi terkini dari internet saat menjawab pertanyaan yang membutuhkan data aktual.
 
 ### Bagaimana di PindyChat?
-- **Status**: ✅ AKTIF (`web_search: true`)
-- **Mekanisme**: Menggunakan Qwen's **built-in web_search tool** via Responses API
+- **Status**: ✅ AKTIF — **default menyala, tapi bisa dimatikan per chat**
+- **Mekanisme**: Qwen's **built-in `web_search` tool** via Responses API
 - **Provider**: Qwen native (gratis, tidak butuh API key tambahan)
+
+### Konfigurasi: `paramDefinitions`, bukan `addParams`
+
+Sejak v0.8.9-rc1 browsing dinyalakan lewat **default parameter**, bukan literal:
+
+```yaml
+customParams:
+  paramDefinitions:
+    - key: web_search
+      type: boolean
+      default: true      # menyala tanpa perlu disentuh
+      component: switch
+```
+
+`web_search` **sengaja tidak** ditaruh di `addParams`. Loop `addParams` berjalan paling akhir
+dan menimpa tanpa syarat (`llm.ts:784-786`), jadi literal di sana membuat browsing menyala
+selamanya dan switch di UI jadi pajangan. `paramDefinitions` dibaca sebagai `defaultParams`
+(`llm.ts:695-701`) yang hanya dipakai **selama request belum menentukan nilainya** — jadi
+posisi OFF dari pengguna tetap menang.
 
 ### Alur Teknis (dari source code):
 ```
 1. User kirim pesan
-2. LibreChat baca addParams.web_search = true
+2. defaultParams.web_search = true dipakai bila switch belum disentuh
 3. LibreChat set useResponsesApi = true (llm.ts:846-849)
 4. LibreChat push { type: 'web_search' } ke tools array
-5. Request dikirim ke /v1/responses endpoint Qwen
-6. Qwen memutuskan kapan perlu search, melakukan search di server mereka
-7. Response dikembalikan dengan hasil search terintegrasi
+5. Request dikirim ke /compatible-mode/v1/responses Qwen
+6. Qwen mencari di server mereka, mengirim event web_search_call
+7. Bridge kita mengubah event itu menjadi kartu pencarian di UI
 ```
+
+### Bukti live: tanpa tool, Qwen tidak mencari sama sekali
+
+Probe SSE langsung ke gateway (bukan dokumentasi), pertanyaan yang sama:
+
+| Request | Item `web_search_call` | Event lifecycle | Sumber |
+|---|---|---|---|
+| Dengan `tools: [{type:'web_search'}]` | **6** (3 pencarian) | **9** | 30 + 30 + 19 URL |
+| Tanpa `tools` | **0** | **0** | — |
+| `enable_search: true`, tanpa `tools` | **0** | **0** | — |
+
+Baris ketiga menjawab pertanyaan yang sering muncul: **`enable_search: true` saja
+tidak membuat Qwen mencari** di gateway ini. Yang wajib adalah deklarasi tool
+`{type:'web_search'}` — jadi tidak perlu menaruh `enable_search` di config.
+
+Urutan yang benar-benar diterima untuk tiap pencarian:
+
+```
+response.output_item.added        status=in_progress   (query belum ada)
+response.web_search_call.in_progress
+response.web_search_call.searching
+response.web_search_call.completed
+response.output_item.done         status=completed, action.query + action.sources[]
+```
+
+Satu jawaban bisa berisi **beberapa** pencarian, masing-masing dengan id, query, dan daftar
+sumbernya sendiri — bridge membuat satu kartu per pencarian, bukan satu kartu gabungan.
 
 ### Indikator Browsing di UI — SUDAH DIPERBAIKI ✅
 
@@ -81,7 +127,7 @@ OpenAI asli, bukan hanya Qwen.
 | Berkas | Peran |
 |---|---|
 | `packages/api/src/stream/providerWebSearch.ts` | Pembaca sinyal murni + state machine yang mensintesis `on_run_step` / `on_run_step_completed` / `on_run_step_closed` |
-| `packages/api/src/stream/providerWebSearch.spec.ts` | 16 test — lifecycle, index, konkurensi, failure, isolasi error, routing dispatch |
+| `packages/api/src/stream/providerWebSearch.spec.ts` | 24 test — lifecycle, index, konkurensi, failure, isolasi error, routing dispatch, normalisasi & publikasi sumber |
 | `api/server/controllers/agents/callbacks.js` | Registrasi observer `on_chat_model_stream` + koreksi index di `ON_RUN_STEP` |
 | `api/server/services/Endpoints/agents/initialize.js` | Meneruskan lever konfigurasi |
 | `packages/data-provider/src/config.ts` | Lever baru `webSearch.providerIndicator` (default `true`) |
@@ -113,6 +159,37 @@ webSearch:
 ```
 
 Tanpa konfigurasi apa pun, indikator **aktif secara default**.
+
+### Daftar sumber di kartu — diperbaiki
+
+Kartu `WebSearch` membangun daftar sumbernya dari **attachment `web_search`**, bukan dari
+string `output` tool. Karena itu bridge kini menormalkan `action.sources` Qwen
+(`{type:'url', url}`) menjadi entri `organic` (`{link, title?, snippet?, position}`) dan
+menerbitkannya lewat jalur attachment yang sama dengan plugin search:
+
+- `writeAttachment(...)` → pembaca live, jadi favicon/domain muncul saat kartu masih di layar
+- `artifactPromises.push(...)` → tersimpan bersama pesan, jadi daftar sumber **tetap ada setelah reload**
+
+Entri tanpa URL `http(s)` dibuang, bukan dirender sebagai baris kosong. Publikasi dilakukan
+sekali per id pencarian walau item yang sama datang berulang.
+
+**Yang terlihat di UI**: "Searching the web" → "Searching the web again" untuk pencarian
+berikutnya → "{{count}} sources" dengan tumpukan favicon dan hovercard per situs. Nama situs
+muncul saat item selesai: Qwen mengirim `action.sources` hanya pada `output_item.done`,
+bukan selama fase `searching`, jadi tidak ada daftar situs yang benar-benar realtime di
+tengah pencarian — itu batas dari provider, bukan dari UI.
+
+### Apakah v0.8.9-rc1 sudah menangani ini sendiri? Tidak.
+
+Dicek di seluruh tree upstream: string `web_search_call` **hanya** ada di berkas PindyChat
+kita. Upstream masih memakai `@langchain/openai` yang menyimpan item itu di `tool_outputs`
+tanpa pernah menjadi `tool_call_chunk`. Jadi bridge ini tetap satu-satunya yang membuat
+browsing terlihat — untuk Qwen maupun OpenAI asli.
+
+Yang upstream lakukan: `ToolsDropdown.tsx` dihapus dan diganti command palette
+(`usePaletteEntries.tsx`). Aturan gear-nya identik — `searchConfigurable` menolak memunculkan
+tombol Configure bila semua `authTypes` bernilai `SYSTEM_DEFINED` (:313-316), persis sinyal
+yang dihasilkan lever `webSearch.providerNative` kita. Jadi gear tetap hilang tanpa API key.
 
 ### Perbedaan dengan LibreChat Web Search Plugin
 | Aspek | Qwen Native (aktif sekarang) | LibreChat Plugin |
@@ -590,13 +667,21 @@ Yang menggantikannya sudah ada di LibreChat dan tidak butuh API key: switch
 **"Web search"** di panel model settings, yang `openAICol2` sediakan untuk
 custom endpoint (`parameterSettings.ts:934`, dipetakan di `:1257`). Menyala
 berarti `openAIParams.web_search` ikut terkirim dan `llm.ts` mengubahnya jadi
-`useResponsesApi` + tool `{ type: 'web_search' }` — perilaku selalu-aktif tanpa
-kredensial, persis toggle Memory di sebelahnya.
+`useResponsesApi` + tool `{ type: 'web_search' }` — tanpa kredensial, persis
+toggle Memory di sebelahnya.
 
-Baris "Web search" bergambar roda gigi di dropdown Tools adalah fitur yang
+Sejak v0.8.9-rc1 switch itu **default menyala** lewat
+`customParams.paramDefinitions` (lihat §2), jadi browsing tetap otomatis tanpa
+perlu disentuh — tapi posisi OFF sekarang benar-benar dihormati, tidak seperti
+saat literalnya masih di `addParams`.
+
+Baris "Web search" bergambar roda gigi di menu Tools adalah fitur yang
 **berbeda**: plugin pencarian milik LibreChat sendiri (Serper/Tavily untuk
-hasil, Firecrawl untuk scraping, Jina/Cohere untuk reranking). Roda giginya
-muncul dari `showWebSearchSettings` (`ToolsDropdown.tsx:103-107`).
+hasil, Firecrawl untuk scraping, Jina/Cohere untuk reranking). Sebelum
+v0.8.9-rc1 roda giginya muncul dari `showWebSearchSettings`
+(`ToolsDropdown.tsx:103-107`); berkas itu kini dihapus upstream dan digantikan
+command palette `usePaletteEntries.tsx`, dengan aturan yang sama persis
+(`searchConfigurable`, :313-316).
 
 > **Koreksi:** menghapus `web_search` dari `endpoints.agents.capabilities`
 > **tidak** menghilangkan roda gigi di deployment ini. `ENDPOINTS=custom`
@@ -614,9 +699,11 @@ webSearch:
 Server lalu menjawab probe kredensial dengan cara yang sama seperti bila
 operator menyetel `SERPER_API_KEY` — `getProviderNativeWebSearchAuth` menandai
 providers, scrapers, dan rerankers sebagai `SYSTEM_DEFINED`, tepat sinyal yang
-dipakai `ToolsDropdown.tsx:103-107` untuk menyembunyikan roda gigi dan mem-pin
-toggle-nya. Tanpa perubahan di sisi klien, switch-nya kini berperilaku seperti
-Memory: dinyalakan, model browsing, tidak ada formulir API key.
+dipakai klien untuk menyembunyikan roda gigi dan mem-pin toggle-nya. Aturan itu
+selamat dari perombakan v0.8.9-rc1: palette penggantinya memeriksa
+`authTypes.every(([, t]) => t === AuthType.SYSTEM_DEFINED)` persis seperti menu
+lama. Tanpa perubahan di sisi klien, switch-nya berperilaku seperti Memory:
+dinyalakan, model browsing, tidak ada formulir API key.
 
 `authResult` sengaja dibiarkan kosong — tidak ada rahasia untuk dikembalikan,
 dan menggema satu akan berarti berbohong.
@@ -639,7 +726,7 @@ bukan sebagai URL file publik.
 | Fitur | Status | Cara Kerja | Toggle di UI? |
 |-------|--------|------------|---------------|
 | Thinking Mode | ✅ Aktif | `addParams.enable_thinking: true` → Qwen API | Show Thinking (display only) |
-| Web Search | ✅ Aktif | switch per-chat → `useResponsesApi` + tool `{type:'web_search'}` | ✅ "Web search" di model settings, tanpa API key |
+| Web Search | ✅ Aktif, default ON | `paramDefinitions.web_search.default: true` → `useResponsesApi` + tool `{type:'web_search'}`; kartu "Searching the web" + daftar sumber via bridge kita | ✅ "Web search" di model settings, tanpa API key, OFF dihormati |
 | PDF Parsing | ✅ Aktif | File upload → attachment ke model | Tidak ada |
 | File Upload | ✅ Aktif | Paperclip icon → upload ke server | Tidak ada |
 | Memory | ❌ Belum | Agents-only feature | Perlu setup Agents |
@@ -648,5 +735,55 @@ bukan sebagai URL file publik.
 
 ---
 
-*Dokumentasi ini berdasarkan investigasi source code LibreChat per September 2026.*
-*Update terakhir: 2026-09-24*
+## 11. Lever konfigurasi baru di v0.8.9-rc1
+
+Merge ini menambah 13 kunci tingkat atas pada `configSchema`. Yang relevan untuk
+PindyChat, beserta penilaian jujur apakah perlu disetel:
+
+| Kunci | Isi | Perlukah disetel sekarang? |
+|---|---|---|
+| `projects` | Chat Projects — instruksi & file referensi bersama per proyek | Opsional; fitur baru, default sudah aman |
+| `passkeys` | Login passkey (WebAuthn) | Opsional; perlu HTTPS yang sudah kita punya |
+| `emailChange` | Izinkan ganti email + konfirmasi | Opsional |
+| `passwordHashing` | Parameter hashing kata sandi | **Jangan** diubah tanpa alasan; mengubahnya berisiko pada login yang ada |
+| `timeouts` | Batas waktu RAG, OCR, actions, moderation, imageFetch | Berguna bila RAG lambat. **Bukan** untuk respons chat yang lambat — stream model tidak lewat sini |
+| `conversationList` | Perilaku daftar percakapan di sidebar | Opsional |
+| `toolCallPreviews` | Pratinjau panggilan tool | Opsional |
+| `mcpAppSandbox` | Sandbox MCP Apps (byte/timeout/admission) | Hanya bila memakai MCP Apps |
+| `fileListLimit` | Batas item daftar file | Opsional |
+| `credentials` | Kebijakan kredensial | Biarkan default |
+| `skillDeletion` | Kebijakan hapus skill | Biarkan default |
+| `githubCompare` | Status PR di header/sidebar | Tidak relevan; butuh repo GitHub terhubung |
+| `telemetry` | Telemetri | Biarkan default |
+
+Selain itu `CONFIG_VERSION` naik ke **1.3.18** — sudah disamakan di
+`librechat.yaml`, jadi peringatan "Outdated Config version" tidak muncul.
+
+### Registry identitas provider: host token-plan belum dikenal
+
+Upstream menambah `packages/api/src/endpoints/custom/providers.ts` yang memetakan
+host ke identitas provider. Untuk Qwen hanya `dashscope.aliyuncs.com` yang
+terdaftar, sedangkan kita memakai `token-plan.maas.qwencloudapi.com` — tidak
+cocok. Dicek langsung:
+
+| Input | Hasil `resolveProviderId` |
+|---|---|
+| `iconURL: "/assets/qwen.svg"` | `null` (resolver mengharapkan nama, bukan path) |
+| `name: "Qwen-Cloud"` | `null` (normalisasi jadi `qwencloud`) |
+| `"qwen"` | `qwen` |
+
+Jadi endpoint kita berstatus **tanpa identitas provider**. Dampaknya kecil dan
+sengaja permisif: untuk media, endpoint tak dikenal tetap memakai default sistem
+(`resolve-llm-delivery-path.ts:194-215`), dan routing audio kita sudah dipatok
+eksplisit lewat `defaultLLMDeliveryPath`.
+
+**Tidak disarankan** mengakalinya dengan mengganti `name` menjadi `Qwen`: nama
+endpoint tersimpan per percakapan, jadi menggantinya akan yatim-kan chat yang
+sudah ada. Field `provider` pada custom endpoint juga **bukan** jalannya —
+schemanya hanya menerima `"anthropic"` (`config.ts:2305`), dan `provider: qwen`
+ditolak saat validasi (diverifikasi).
+
+---
+
+*Dokumentasi ini berdasarkan investigasi source code LibreChat.*
+*Update terakhir: 2026-11-12 — setelah merge upstream v0.8.9-rc1.*
