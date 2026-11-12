@@ -199,6 +199,28 @@ describe('Qwen3.5 and later generations', () => {
     }
   });
 
+  /**
+   * Both are hosted tiers on Qwen Cloud's gateway. Without a key of their own the
+   * substring match settled for `qwen3.8` (262K) and the bare `qwen` (32K), so the
+   * context budget pruned conversations that still had room.
+   */
+  it('resolves 1M for the hosted max tier and the qwen4 preview', () => {
+    for (const model of ['qwen3.8-max', 'qwen4-max-preview']) {
+      expect(getModelMaxTokens(model, EModelEndpoint.openAI)).toBe(1000000);
+      expect(getModelMaxTokens(model, EModelEndpoint.custom)).toBe(1000000);
+    }
+  });
+
+  it('keeps the 1M window for prefixed and dated ids of those tiers', () => {
+    expect(getModelMaxTokens('Qwen/qwen3.8-max', EModelEndpoint.custom)).toBe(1000000);
+    expect(getModelMaxTokens('qwen4-max-preview-2026-11-01', EModelEndpoint.custom)).toBe(1000000);
+  });
+
+  /** The gateway echoes `qwen4.0-max-preview` for the `qwen4-max-preview` alias. */
+  it('resolves the canonical id the gateway reports for the qwen4 alias', () => {
+    expect(getModelMaxTokens('qwen4.0-max-preview', EModelEndpoint.custom)).toBe(1000000);
+  });
+
   it('leaves the qwen3 generation and its parameter sizes untouched', () => {
     expect(getModelMaxTokens('qwen3', EModelEndpoint.openAI)).toBe(40960);
     expect(getModelMaxTokens('qwen3-30b-a3b', EModelEndpoint.openAI)).toBe(40960);

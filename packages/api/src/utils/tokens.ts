@@ -368,7 +368,7 @@ const qwenModels = {
   'qwen3-next-80b-a3b': 262144,
   'qwen3-coder-next': 262144,
   /* Qwen3.5 onward: every open-weight size ships a 262K native window, while the
-     hosted plus/flash tiers serve 1M. */
+     hosted plus/flash/max tiers serve 1M. */
   'qwen3.5': 262144,
   'qwen3.5-plus': 1000000,
   'qwen3.5-flash': 1000000,
@@ -381,6 +381,14 @@ const qwenModels = {
   'qwen3.8': 262144,
   'qwen3.8-plus': 1000000,
   'qwen3.8-flash': 1000000,
+  /* A hosted tier with no key of its own resolves to the generation window above,
+     which understates it: `qwen3.8-max` reported 262K and `qwen4-max-preview`
+     fell all the way back to the bare `qwen` key's 32K. */
+  'qwen3.8-max': 1000000,
+  'qwen4-max-preview': 1000000,
+  /* The gateway answers `qwen4-max-preview` with the canonical id `qwen4.0-max-preview`,
+     so a fetched model list or a stored conversation can carry either spelling. */
+  'qwen4.0-max-preview': 1000000,
 };
 
 const ai21Models = {
