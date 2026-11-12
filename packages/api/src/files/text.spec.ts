@@ -19,6 +19,10 @@ jest.mock('../crypto/jwt', () => ({
   generateShortLivedToken: jest.fn(),
 }));
 
+jest.mock('./documents/crud', () => ({
+  parseDocument: jest.fn(),
+}));
+
 jest.mock('axios', () => ({
   get: jest.fn(),
   post: jest.fn(),
@@ -54,6 +58,7 @@ import FormData from 'form-data';
 import type { ServerRequest } from '~/types';
 import { generateShortLivedToken } from '~/crypto/jwt';
 import { logAxiosError, readFileAsString } from '~/utils';
+import { parseDocument } from './documents/crud';
 
 const mockedFs = fs as jest.Mocked<typeof fs>;
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -64,6 +69,7 @@ const mockedGenerateShortLivedToken = generateShortLivedToken as jest.MockedFunc
 const mockedReadFileAsString = readFileAsString as jest.MockedFunction<typeof readFileAsString>;
 const mockedLogAxiosError = logAxiosError as jest.MockedFunction<typeof logAxiosError>;
 const mockedLoggerError = logger.error as jest.MockedFunction<typeof logger.error>;
+const mockedParseDocument = parseDocument as jest.MockedFunction<typeof parseDocument>;
 
 describe('text', () => {
   const mockFile: Express.Multer.File = {
@@ -488,6 +494,116 @@ describe('text', () => {
           bytes: Buffer.byteLength(mockText, 'utf8'),
           source: FileSources.text,
         });
+      });
+    });
+
+    /**
+     * For a container format it does not partition, RAG answers HTTP 200 with the
+     * archive's own bytes as the text (observed live with ODT and ODS). The error
+     * path never runs, so without recovery those bytes are stored as the file's
+     * text and handed to the model.
+     */
+    describe('RAG returned the container instead of its content', () => {
+      const odtFile = {
+        ...mockFile,
+        mimetype: 'application/vnd.oasis.opendocument.text',
+        originalname: 'notes.odt',
+      } as Express.Multer.File;
+      const xmlFile = {
+        ...mockFile,
+        mimetype: 'application/xml',
+        originalname: 'feed.xml',
+      } as Express.Multer.File;
+      const zipBytes = 'PK\u0003\u0004\u0014\u0000mimetypeapplication/vnd.oasis.opendocument.text';
+
+      beforeEach(() => {
+        process.env.RAG_API_URL = 'http://rag-api.test';
+        mockedAxios.get.mockResolvedValue({ status: 200, statusText: 'OK' });
+      });
+
+      it('reads a container format with the built-in parser instead of its ZIP bytes', async () => {
+        mockedAxios.post.mockResolvedValue({ data: { text: zipBytes } });
+        mockedParseDocument.mockResolvedValue({
+          text: 'Pindy Yogurt',
+          bytes: 12,
+          filename: 'notes.odt',
+          filepath: 'document_parser',
+          images: [],
+        });
+
+        const result = await parseText({ req: mockReq, file: odtFile, file_id: mockFileId });
+
+        expect(mockedParseDocument).toHaveBeenCalledWith({ file: odtFile });
+        expect(mockedReadFileAsString).not.toHaveBeenCalled();
+        expect(result).toEqual({
+          text: 'Pindy Yogurt',
+          bytes: Buffer.byteLength('Pindy Yogurt', 'utf8'),
+          source: FileSources.text,
+        });
+      });
+
+      /**
+       * An empty extraction is the correct answer for an empty file and for a
+       * document with no text nodes, so recovery must not second-guess it.
+       */
+      it('keeps an empty extraction rather than re-reading the file', async () => {
+        mockedAxios.post.mockResolvedValue({ data: { text: '' } });
+
+        const result = await parseText({ req: mockReq, file: xmlFile, file_id: mockFileId });
+
+        expect(mockedParseDocument).not.toHaveBeenCalled();
+        expect(mockedReadFileAsString).not.toHaveBeenCalled();
+        expect(result).toEqual({ text: '', bytes: 0, source: FileSources.text });
+      });
+
+      it('keeps a text file whose content legitimately begins with the ZIP signature', async () => {
+        const txtFile = { ...mockFile, originalname: 'signature.txt' } as Express.Multer.File;
+        mockedAxios.post.mockResolvedValue({ data: { text: zipBytes } });
+
+        const result = await parseText({ req: mockReq, file: txtFile, file_id: mockFileId });
+
+        expect(mockedReadFileAsString).not.toHaveBeenCalled();
+        expect(mockedParseDocument).not.toHaveBeenCalled();
+        expect(result.text).toBe(zipBytes);
+      });
+
+      it('leaves usable extraction untouched', async () => {
+        mockedAxios.post.mockResolvedValue({ data: { text: 'real slide text' } });
+
+        const result = await parseText({ req: mockReq, file: odtFile, file_id: mockFileId });
+
+        expect(mockedParseDocument).not.toHaveBeenCalled();
+        expect(mockedReadFileAsString).not.toHaveBeenCalled();
+        expect(result.text).toBe('real slide text');
+      });
+
+      it('surfaces the parser failure as itself rather than decoding binary bytes', async () => {
+        mockedAxios.post.mockResolvedValue({ data: { text: zipBytes } });
+        mockedParseDocument.mockRejectedValue(new Error('No text found in document'));
+
+        await expect(
+          parseText({ req: mockReq, file: odtFile, file_id: mockFileId }),
+        ).rejects.toThrow('No text found in document');
+        expect(mockedReadFileAsString).not.toHaveBeenCalled();
+      });
+
+      it('still honors allowNativeFallback: false for a type no parser handles', async () => {
+        const rtfFile = {
+          ...mockFile,
+          mimetype: 'application/rtf',
+          originalname: 'note.rtf',
+        } as Express.Multer.File;
+        mockedAxios.post.mockResolvedValue({ data: { text: zipBytes } });
+
+        await expect(
+          parseText({
+            req: mockReq,
+            file: rtfFile,
+            file_id: mockFileId,
+            allowNativeFallback: false,
+          }),
+        ).rejects.toThrow('native fallback is disabled');
+        expect(mockedReadFileAsString).not.toHaveBeenCalled();
       });
     });
   });
