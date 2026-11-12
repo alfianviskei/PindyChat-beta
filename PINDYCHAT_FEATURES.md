@@ -289,18 +289,104 @@ memory:
 ### Status di PindyChat:
 - ✅ **Aktif** untuk Qwen-Cloud endpoint
 - **Limit**: 20 file per request, 25MB per file, 200MB total
-- **Format**: Gambar (semua tipe) + PDF
+- **Format**: seluruh keluarga yang bisa dibaca LibreChat — teks/kode, Office,
+  OpenDocument, epub, gambar, audio (lihat tabel di bawah)
+
+### Tidak perlu mendaftar tipe file satu per satu
+
+Pertanyaan yang wajar: apakah setiap ekstensi harus ditulis di config? **Tidak.**
+Justru sebaliknya — menulis daftar sendiri adalah penyebab file ditolak.
+
+`supportedMimeTypes` per endpoint **menggantikan** daftar bawaan, bukan menambahinya,
+dan `filterFile` (`api/server/services/Files/process.js:1835-1842`) menolak setiap tipe
+yang tidak ada di daftar itu. Konfigurasi lama hanya berisi tiga entri
+(`image/.*`, `application/pdf`, audio) — itulah sebabnya Markdown, teks biasa, dan
+dokumen Office tidak bisa di-upload.
+
+Solusinya: **hapus** `supportedMimeTypes` dari endpoint. Nilai bawaannya
+(`file-config.ts:582-588`) sudah berupa union terkurasi `supportedMimeTypes`
+(:361-372) yang mencakup semua keluarga yang ada pembaca/ekstraktornya. Tipe baru
+ikut datang bersama update upstream, tanpa perlu mengedit config.
+
+Daftar yang sama juga dipakai browser: `useUploadOptions.ts:58-66` mengambilnya dari
+config yang dikirim server, jadi satu perubahan memperbaiki file picker **dan** gerbang
+server sekaligus — tidak ada daftar kedua yang perlu disinkronkan.
+
+### Hasil terukur (resolver asli, 38 tipe umum)
+
+| | Sebelum | Sesudah |
+|---|---|---|
+| Lolos gerbang upload | **8 / 38** | **36 / 38** |
+| benar-benar sampai ke model | 8 / 38 | **31 / 38** |
+
+Yang tetap ditolak: executable (`application/x-msdownload`) — memang seharusnya.
+Yang lolos tapi tidak dikirim ke model (`none`): arsip zip/tar, parquet, video, `.doc`
+lama, dan presentasi/gambar OpenDocument. Tidak ada pembaca yang mengubahnya jadi
+teks, jadi file disimpan namun tidak dikirim sebagai byte mentah ke model.
+
+**RTF** adalah satu-satunya format umum yang tidak ada di union bawaan, sehingga tetap
+tidak bisa di-upload. Menambahkannya berarti kembali mendaftar tipe satu per satu —
+tidak sepadan.
+
+### Bukti live: ekstraksi benar-benar terjadi
+
+Probe ke rute RAG `/text` yang dipakai `parseText`, bukan pembacaan dokumentasi:
+
+| File | Hasil |
+|---|---|
+| `.md`, `.txt`, `.csv`, `.tsv`, `.json`, `.yaml`, `.sql`, `.py`, `.ts`, `.log`, `.html`, `.eml` | teks asli |
+| `.docx` | "This is a sample DOCX file." |
+| `.xlsx` | isi sel |
+| `.pptx` | teks slide |
+| `.epub` | teks bab |
+| `.odt` | teks paragraf (setelah perbaikan di bawah) |
+| `.xml` berisi text node | "Pindy Yogurt stroberi 15000" |
+| `.xml` hanya atribut | kosong — **benar**, tidak ada teks untuk diekstrak |
+| file kosong | kosong — **benar** |
+
+### Perbaikan: RAG kadang mengembalikan arsipnya, bukan isinya
+
+Untuk format yang tidak dipartisi RAG (ODT/ODS), ia menjawab **HTTP 200** dengan byte
+ZIP arsip itu sendiri sebagai `text`. Karena statusnya sukses, jalur error tidak pernah
+jalan dan byte itu tersimpan sebagai teks file lalu diberikan ke model.
+
+`packages/api/src/files/text.ts` kini mendeteksi tanda tangan ZIP dan memakai parser
+dokumen bawaan untuk membacanya. Dijalankan ujung-ke-ujung tanpa mock:
+
+```
+doc.odt  ok  67 chars  "Pindy Yogurt rasa stroberi dan mangga, harga 15000 per botol 250ml."
+```
+
+Hasil kosong **sengaja tidak** dianggap gagal — itu jawaban benar untuk file kosong dan
+dokumen tanpa text node, dan ada test lama yang menjaganya.
+
+### Anggaran konteks disesuaikan untuk tier 1M
+
+Bawaan LibreChat berukuran untuk model 128K. Karena tier Qwen kita 1M token:
+
+| Kunci | Bawaan | PindyChat |
+|---|---|---|
+| `fileTokenLimit` | 100.000 | **200.000** |
+| `fileContextCharLimit` | 1.000.000 (~250K token) | **3.000.000** (~750K token) |
+| `fileContextSizeLimit` | 128 MB | **200 MB** (sama dengan `totalSizeLimit`) |
+
+Tanpa ini, beberapa dokumen sudah menghabiskan kuota padahal sebagian besar jendela
+konteks masih kosong.
 
 ### Cara Kerja:
 1. User klik ikon paperclip 📎 di chat input
-2. Pilih file dari device
+2. Pilih file dari device (banyak file sekaligus, sampai 20)
 3. File di-upload ke server LibreChat
-4. File dikirim sebagai attachment ke model Qwen
-5. Qwen memproses konten file (gambar/PDF) dan merespons
+4. Teks diekstrak (RAG, atau parser bawaan bila RAG mengembalikan arsipnya)
+5. Teks/gambar dikirim sebagai attachment ke model Qwen
 
 ### File terkait (source code):
-- `packages/data-provider/src/file-config.ts` — file config schema
-- `librechat.yaml` — `fileConfig.endpoints.Qwen-Cloud`
+- `packages/data-provider/src/file-config.ts` — union bawaan + resolver routing
+- `packages/data-provider/src/resolve-llm-delivery-path.ts` — tujuan tiap tipe
+- `packages/api/src/files/text.ts` — ekstraksi + pemulihan arsip
+- `api/server/services/Files/process.js` — gerbang `filterFile`
+- `client/src/hooks/Files/useUploadOptions.ts` — daftar yang dipakai file picker
+- `librechat.yaml` — `fileConfig`
 
 ---
 
@@ -373,14 +459,21 @@ Untuk menambah tool seperti `i2i_search` atau `t2i_search`, perlu modifikasi sou
 version: 1.3.18
 cache: true
 fileConfig:
+  fileTokenLimit: 200000
+  fileContextCharLimit: 3000000
+  fileContextSizeLimit: 200
   endpoints:
     Qwen-Cloud:
       fileLimit: 20
       fileSizeLimit: 25
       totalSizeLimit: 200
-      supportedMimeTypes:
-        - "image/.*"
-        - "application/pdf"
+      # supportedMimeTypes sengaja TIDAK ada — daftar bawaan sudah lengkap.
+      # Menulis daftar sendiri justru MENGGANTINYA dan menolak sisanya (§5).
+      defaultLLMDeliveryPath:
+        overrides:
+          "audio/*": text        # transkripsi, bukan input_audio ke model teks
+          "application/vnd.openxmlformats-officedocument.presentationml.presentation": text
+          "application/epub+zip": text
 endpoints:
   custom:
     - name: "Qwen-Cloud"
@@ -836,4 +929,4 @@ membawa salah satunya. Kedua model dikonfirmasi hidup di key token-plan.
 ---
 
 *Dokumentasi ini berdasarkan investigasi source code LibreChat.*
-*Update terakhir: 2026-11-12 — host Qwen Cloud terdaftar, tier max 1M, `qwen4-max-preview` ditambahkan.*
+*Update terakhir: 2026-11-12 — upload dibuka untuk seluruh keluarga yang bisa dibaca (8/38 → 36/38 tipe), anggaran konteks disesuaikan untuk tier 1M, pemulihan ekstraksi ODT/ODS.*
