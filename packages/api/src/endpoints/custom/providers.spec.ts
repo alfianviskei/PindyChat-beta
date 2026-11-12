@@ -100,8 +100,42 @@ describe('resolveEndpointProviderId', () => {
     ['https://team.cognitiveservices.azure.com/openai/v1', ProviderId.azure],
     ['https://generativelanguage.googleapis.com/v1beta', ProviderId.google],
     ['https://aiplatform.googleapis.com/v1', ProviderId.google],
+    ['https://dashscope.aliyuncs.com/compatible-mode/v1', ProviderId.qwen],
+    ['https://dashscope-intl.aliyuncs.com/compatible-mode/v1', ProviderId.qwen],
+    ['https://maas.qwencloudapi.com/api/v1', ProviderId.qwen],
+    ['https://token-plan.maas.qwencloudapi.com/compatible-mode/v1', ProviderId.qwen],
   ])('brands %s from its host alone', (baseURL, expected) => {
     expect(resolveEndpointProviderId({ name: 'Team Gateway', baseURL })).toBe(expected);
+  });
+
+  /**
+   * The Qwen Cloud gateway is reached through a tenant-prefixed host, and an
+   * operator's own logo is an image address rather than a provider name, so the
+   * host is the only signal left. Neither the name nor the icon supplies one.
+   */
+  it('brands a tenant-prefixed Qwen Cloud gateway that carries its own logo', () => {
+    expect(
+      resolveEndpointProviderId({
+        name: 'Qwen-Cloud',
+        baseURL: 'https://token-plan.maas.qwencloudapi.com/compatible-mode/v1',
+        iconURL: '/assets/qwen.svg',
+      }),
+    ).toBe(ProviderId.qwen);
+  });
+
+  it('does not brand a look-alike host that merely ends with the domain text', () => {
+    expect(
+      resolveEndpointProviderId({
+        name: 'Gateway',
+        baseURL: 'https://evil-qwencloudapi.com/v1',
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveEndpointProviderId({
+        name: 'Gateway',
+        baseURL: 'https://qwencloudapi.com.attacker.test/v1',
+      }),
+    ).toBeUndefined();
   });
 
   it('carries a host for every provider that one can identify', () => {

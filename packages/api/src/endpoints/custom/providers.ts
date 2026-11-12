@@ -23,6 +23,10 @@ export const providerHosts: ReadonlyArray<readonly [string, ProviderId]> = [
   ['helicone.ai', ProviderId.helicone],
   ['ai-gateway.vercel.sh', ProviderId.vercel],
   ['dashscope.aliyuncs.com', ProviderId.qwen],
+  ['dashscope-intl.aliyuncs.com', ProviderId.qwen],
+  /* Qwen Cloud's MaaS gateway, the successor to the DashScope hosts above. Tenant
+     prefixes (`token-plan.maas.…`) fall under this suffix, so one entry covers them. */
+  ['qwencloudapi.com', ProviderId.qwen],
   ['openai.azure.com', ProviderId.azure],
   ['cognitiveservices.azure.com', ProviderId.azure],
   ['generativelanguage.googleapis.com', ProviderId.google],
