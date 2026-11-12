@@ -115,6 +115,7 @@ export type { GenerationSettlementState } from './interfaces/IJobStore';
 export {
   createProviderWebSearchBridge,
   isTerminalProviderWebSearchStatus,
+  readProviderSources,
   readProviderWebSearchItem,
   readProviderWebSearchSignals,
 } from './providerWebSearch';
@@ -123,5 +124,6 @@ export type {
   ProviderWebSearchBridgeDeps,
   ProviderWebSearchIdentity,
   ProviderWebSearchSignal,
+  ProviderWebSearchSource,
   ProviderWebSearchStatus,
 } from './providerWebSearch';

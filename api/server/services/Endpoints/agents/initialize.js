@@ -2080,6 +2080,8 @@ const initializeClientWithProvider = async ({
     resolveMcpServerName,
     /** `webSearch.providerIndicator` in `librechat.yaml`; on unless explicitly disabled. */
     providerWebSearchIndicator: appConfig?.webSearch?.providerIndicator !== false,
+    /** Lets the provider search bridge persist its citations with the message. */
+    artifactPromises,
     toolTimingReplayEvents,
   });
 

@@ -2,6 +2,7 @@ import {
   createProviderWebSearchBridge,
   isTerminalProviderWebSearchStatus,
   readProviderWebSearchSignals,
+  readProviderSources,
 } from './providerWebSearch';
 
 const RUN_STEP = 'on_run_step';
@@ -21,6 +22,7 @@ function makeHarness() {
   const stepMap = new Map<string, { index?: number }>();
   const slots: Array<{ stepId: string } | undefined> = [];
   const emitted: Emitted[] = [];
+  const published: Array<{ toolCallId: string; sources: any[] }> = [];
 
   const aggregateContent = ({ event, data }: { event: string; data: any }) => {
     if (event !== RUN_STEP) {
@@ -37,6 +39,9 @@ function makeHarness() {
     stepMap,
     emit: ({ event, data }) => {
       emitted.push({ event, data: JSON.parse(JSON.stringify(data)) });
+    },
+    onSources: (input) => {
+      published.push(JSON.parse(JSON.stringify(input)));
     },
     events: {
       runStep: RUN_STEP,
@@ -64,8 +69,20 @@ function makeHarness() {
     generationInfo: { tool_outputs: { item_id: itemId, type: 'web_search_call', status } },
   });
 
-  return { bridge, emitted, stepMap, slots, realStep, only, lifecycle };
+  return { bridge, emitted, stepMap, slots, realStep, only, lifecycle, published };
 }
+
+/** The settled item Qwen's `compatible-mode` Responses API actually returns. */
+const qwenItem = (id: string, query: string, urls: string[]) => ({
+  type: 'web_search_call',
+  id,
+  status: 'completed',
+  action: {
+    type: 'search',
+    query,
+    sources: urls.map((url) => ({ type: 'url', url })),
+  },
+});
 
 describe('readProviderWebSearchSignals', () => {
   it('reads the nested `response.output_item.done` shape', () => {
@@ -324,8 +341,12 @@ describe('createProviderWebSearchBridge', () => {
         stepMap.set(data.id, { ...data, index });
       },
       stepMap,
-      emit: ({ event, data }) => emitted.push({ event, data }),
-      dispatch: ({ event, data }) => dispatched.push({ event, data }),
+      emit: ({ event, data }) => {
+        emitted.push({ event, data });
+      },
+      dispatch: ({ event, data }) => {
+        dispatched.push({ event, data });
+      },
       events: {
         runStep: RUN_STEP,
         runStepCompleted: RUN_STEP_COMPLETED,
@@ -356,5 +377,138 @@ describe('createProviderWebSearchBridge', () => {
 
     expect(h.only(RUN_STEP_COMPLETED)).toHaveLength(1);
     expect(h.only(RUN_STEP_CLOSED)).toHaveLength(1);
+  });
+});
+
+/**
+ * The card reads its source list from a `web_search` attachment, never from the
+ * tool output string, so these cover the path that actually puts URLs on screen.
+ */
+describe('provider web search sources', () => {
+  it("normalizes Qwen's `action.sources` url entries", () => {
+    const signals = readProviderWebSearchSignals({
+      additional_kwargs: {
+        tool_outputs: [
+          qwenItem('msg_1', 'latest node release', ['https://nodejs.org/en', 'https://a.test/x']),
+        ],
+      },
+    });
+
+    expect(signals[0].sources).toEqual([
+      { link: 'https://nodejs.org/en', position: 1 },
+      { link: 'https://a.test/x', position: 2 },
+    ]);
+  });
+
+  it('accepts titled results, `link` keys and bare url strings', () => {
+    expect(
+      readProviderSources([
+        { url: 'https://a.test', title: 'A', snippet: 'about a' },
+        { link: 'https://b.test', name: 'B', description: 'about b' },
+        'https://c.test',
+      ]),
+    ).toEqual([
+      { link: 'https://a.test', title: 'A', snippet: 'about a', position: 1 },
+      { link: 'https://b.test', title: 'B', snippet: 'about b', position: 2 },
+      { link: 'https://c.test', position: 3 },
+    ]);
+  });
+
+  it('drops entries without an http(s) url rather than rendering empty rows', () => {
+    expect(
+      readProviderSources([
+        { type: 'url' },
+        { url: 'javascript:alert(1)' },
+        { url: '' },
+        null,
+        42,
+        { url: 'https://ok.test' },
+      ]),
+    ).toEqual([{ link: 'https://ok.test', position: 1 }]);
+    expect(readProviderSources([])).toBeUndefined();
+    expect(readProviderSources(undefined)).toBeUndefined();
+    expect(readProviderSources([{ url: 'ftp://nope.test' }])).toBeUndefined();
+  });
+
+  it('publishes the cited pages against the provider call id', async () => {
+    const h = makeHarness();
+    await h.bridge.handleChunk({
+      additional_kwargs: {
+        tool_outputs: [qwenItem('msg_pub', 'q', ['https://a.test', 'https://b.test'])],
+      },
+    });
+
+    expect(h.published).toHaveLength(1);
+    expect(h.published[0].toolCallId).toBe('msg_pub');
+    expect(h.published[0].sources.map((s) => s.link)).toEqual([
+      'https://a.test',
+      'https://b.test',
+    ]);
+  });
+
+  it('publishes once per call even when later transitions repeat the item', async () => {
+    const h = makeHarness();
+    const item = qwenItem('msg_once', 'q', ['https://a.test']);
+    await h.bridge.handleChunk({ additional_kwargs: { tool_outputs: [item] } });
+    await h.bridge.handleChunk({ additional_kwargs: { tool_outputs: [item] } });
+    await h.bridge.handleChunk(h.lifecycle('msg_once', 'completed'));
+
+    expect(h.published).toHaveLength(1);
+  });
+
+  it('stays silent when the provider reports no citations', async () => {
+    const h = makeHarness();
+    await h.bridge.handleChunk(h.lifecycle('ws_bare', 'searching'));
+    await h.bridge.handleChunk(h.lifecycle('ws_bare', 'completed'));
+
+    expect(h.published).toHaveLength(0);
+    expect(h.only(RUN_STEP)).toHaveLength(1);
+  });
+
+  /**
+   * Qwen answers one question with several searches, each a distinct settled
+   * item. Every one must become its own card carrying its own citations —
+   * attachments are routed to parts by `toolCallId`, so a shared id would
+   * collapse them.
+   */
+  it('gives each of several searches its own card and citations', async () => {
+    const h = makeHarness();
+    await h.bridge.handleChunk({
+      additional_kwargs: {
+        tool_outputs: [
+          qwenItem('msg_a', 'first', ['https://a.test']),
+          qwenItem('msg_b', 'second', ['https://b.test', 'https://b2.test']),
+          qwenItem('msg_c', 'third', ['https://c.test']),
+        ],
+      },
+    });
+
+    expect(h.only(RUN_STEP)).toHaveLength(3);
+    expect(h.only(RUN_STEP_CLOSED)).toHaveLength(3);
+    expect(h.published.map((p) => p.toolCallId)).toEqual(['msg_a', 'msg_b', 'msg_c']);
+    expect(h.published[1].sources).toHaveLength(2);
+    expect(h.slots.filter(Boolean)).toHaveLength(3);
+    expect(h.only(RUN_STEP).map((e) => e.data.index)).toEqual([0, 1, 2]);
+  });
+
+  it('never lets a failing attachment write take the generation down', async () => {
+    const bridge = createProviderWebSearchBridge({
+      aggregateContent: () => undefined,
+      emit: () => undefined,
+      onSources: () => {
+        throw new Error('attachment write failed');
+      },
+      events: {
+        runStep: RUN_STEP,
+        runStepCompleted: RUN_STEP_COMPLETED,
+        runStepClosed: RUN_STEP_CLOSED,
+      },
+    });
+
+    await expect(
+      bridge.handleChunk({
+        additional_kwargs: { tool_outputs: [qwenItem('msg_x', 'q', ['https://a.test'])] },
+      }),
+    ).resolves.toBeUndefined();
   });
 });

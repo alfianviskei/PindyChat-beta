@@ -39,6 +39,18 @@ const SYNTHETIC_SOURCE_INDEX_BASE = -1;
 
 export type ProviderWebSearchStatus = string;
 
+/**
+ * One cited page, normalized to the `organic` entry the search card reads.
+ * `link` is the only field the client requires (`collectSources` keys on it);
+ * providers that report bare URLs still render a favicon and a domain.
+ */
+export type ProviderWebSearchSource = {
+  link: string;
+  title?: string;
+  snippet?: string;
+  position?: number;
+};
+
 export type ProviderWebSearchSignal = {
   /** Stable provider id for the call (`ws_…` on OpenAI). Keys the bridge state. */
   itemId: string;
@@ -47,6 +59,8 @@ export type ProviderWebSearchSignal = {
   query?: string;
   /** Serialized results/sources, when the provider attaches them to the item. */
   output?: string;
+  /** Cited pages, when the provider attaches them. Surfaced as an attachment. */
+  sources?: ProviderWebSearchSource[];
 };
 
 type UnknownRecord = Record<string, unknown>;
@@ -88,9 +102,13 @@ export function readProviderWebSearchItem(item: unknown): ProviderWebSearchSigna
   const query = firstString(action?.query, item.query, action?.search_query);
 
   /**
-   * Results are forwarded only when the provider actually attached them. The
-   * card parses `output` as JSON to render sources; an empty string leaves it
-   * in its "no sources reported" state rather than fabricating one.
+   * Results are forwarded only when the provider actually attached them, so an
+   * item with no citations stays in the card's "no sources reported" state
+   * rather than fabricating one.
+   *
+   * `output` is the persisted tool output (what a reload replays); the card
+   * itself reads sources from a `web_search` attachment, which `sources` below
+   * feeds. Both are kept because they serve different readers.
    */
   const results = item.results ?? item.sources ?? action?.results ?? action?.sources;
   let output: string | undefined;
@@ -102,7 +120,45 @@ export function readProviderWebSearchItem(item: unknown): ProviderWebSearchSigna
     }
   }
 
-  return { itemId, status, query, output };
+  return { itemId, status, query, output, sources: readProviderSources(results) };
+}
+
+/**
+ * Normalizes the citation shapes providers use into `organic` entries. Qwen
+ * reports `{ type: 'url', url }` under `action.sources`; OpenAI-style payloads
+ * carry `url`/`title`/`snippet`, and some gateways already use `link`. A bare
+ * string is accepted too. Entries without a usable URL are dropped rather than
+ * rendered as an empty row.
+ */
+export function readProviderSources(results: unknown): ProviderWebSearchSource[] | undefined {
+  if (!Array.isArray(results) || results.length === 0) {
+    return undefined;
+  }
+  const sources: ProviderWebSearchSource[] = [];
+  for (const entry of results) {
+    const link =
+      typeof entry === 'string'
+        ? entry
+        : isRecord(entry)
+          ? firstString(entry.link, entry.url)
+          : undefined;
+    if (link == null || !/^https?:\/\//i.test(link)) {
+      continue;
+    }
+    const source: ProviderWebSearchSource = { link, position: sources.length + 1 };
+    if (isRecord(entry)) {
+      const title = firstString(entry.title, entry.name);
+      const snippet = firstString(entry.snippet, entry.description, entry.content);
+      if (title != null) {
+        source.title = title;
+      }
+      if (snippet != null) {
+        source.snippet = snippet;
+      }
+    }
+    sources.push(source);
+  }
+  return sources.length > 0 ? sources : undefined;
 }
 
 function readSignalContainer(container: unknown, out: ProviderWebSearchSignal[]): void {
@@ -180,6 +236,19 @@ export type ProviderWebSearchBridgeDeps = {
    * host handler aggregates again, so dispatching it would fold one step twice.
    */
   dispatch?: (input: { event: string; data: unknown }) => Promise<void> | void;
+  /**
+   * Publishes the cited pages as a `web_search` attachment.
+   *
+   * The card reads its source list from attachments (or the live search
+   * context), never from the tool output string, so without this the indicator
+   * renders with an empty list even when the provider reported dozens of URLs.
+   * The host owns the attachment envelope — ownership, message/conversation ids
+   * and the stream write — so this module only hands over the normalized pages.
+   */
+  onSources?: (input: {
+    toolCallId: string;
+    sources: ProviderWebSearchSource[];
+  }) => Promise<void> | void;
   /** Event names, supplied by the host so this module stays SDK-agnostic. */
   events: {
     runStep: string;
@@ -208,6 +277,8 @@ type TrackedSearch = {
   query?: string;
   output?: string;
   closed: boolean;
+  /** Guards against republishing the same citation list on every transition. */
+  sourcesPublished: boolean;
 };
 
 export type ProviderWebSearchBridge = {
@@ -251,6 +322,23 @@ export function createProviderWebSearchBridge(
   let nextStepOrdinal = 0;
   let identity: ProviderWebSearchIdentity = {};
 
+  /**
+   * Qwen reports the finished item in one shot — `status: 'completed'` already
+   * carrying `action.sources` — so this cannot wait for a later transition.
+   * Publishing before the step closes is also what lets the card show favicons
+   * while the search is still on screen.
+   */
+  const publishSources = async (
+    entry: TrackedSearch,
+    signal: ProviderWebSearchSignal,
+  ): Promise<void> => {
+    if (deps.onSources == null || entry.sourcesPublished || signal.sources == null) {
+      return;
+    }
+    entry.sourcesPublished = true;
+    await deps.onSources({ toolCallId: signal.itemId, sources: signal.sources });
+  };
+
   const openStep = async (signal: ProviderWebSearchSignal): Promise<TrackedSearch | null> => {
     const now = Date.now();
     const stepId = `ws_${signal.itemId}`;
@@ -263,6 +351,7 @@ export function createProviderWebSearchBridge(
       query: signal.query,
       output: signal.output,
       closed: false,
+      sourcesPublished: false,
     };
     tracked.set(signal.itemId, entry);
 
@@ -298,6 +387,7 @@ export function createProviderWebSearchBridge(
     deps.aggregateContent({ event: deps.events.runStep, data });
     injected = true;
     await deps.emit({ event: deps.events.runStep, data: resolveIndex(data) });
+    await publishSources(entry, signal);
     return entry;
   };
 
@@ -394,6 +484,7 @@ export function createProviderWebSearchBridge(
           if (signal.output != null) {
             existing.output = signal.output;
           }
+          await publishSources(existing, signal);
           if (isTerminalProviderWebSearchStatus(signal.status)) {
             await closeStep(existing, signal.itemId);
           }

@@ -339,6 +339,9 @@ async function maybeEmitSandboxStarting(emitForJob, data, metadata) {
  * @param {boolean} [options.providerWebSearchIndicator] - Surface a provider-executed built-in
  *   `web_search` (OpenAI Responses API and compatible gateways such as Qwen) as a real
  *   `web_search` tool step, so the client renders its search card. Defaults to `true`.
+ * @param {Array<Promise<Object|null>>} [options.artifactPromises] - Resolved attachments the save
+ *   path persists on the response message. The provider search bridge adds its citations here;
+ *   without it they would only exist on the live stream and vanish on reload.
  * @returns {Record<string, t.EventHandler>} The default handlers.
  * @throws {Error} If the request is not found.
  */
@@ -362,6 +365,7 @@ function getDefaultHandlers({
   eventChildActivity = null,
   resolveMcpServerName = null,
   providerWebSearchIndicator = true,
+  artifactPromises = null,
   toolTimingReplayEvents = [],
 }) {
   if (!res || !aggregateContent) {
@@ -507,6 +511,28 @@ function getDefaultHandlers({
       return handler?.handle
         ? handler.handle(event, data, observedStreamMetadata)
         : emitForJob({ event, data });
+    },
+    /**
+     * The card builds its source list from `web_search` attachments, not from
+     * the tool output string, so the cited pages have to travel the same
+     * attachment path a plugin search uses (`output.artifact[Tools.web_search]`
+     * below). Envelope and routing stay here; the bridge only normalizes pages.
+     */
+    onSources: ({ toolCallId, sources }) => {
+      const metadata = observedStreamMetadata;
+      const attachment = {
+        type: Tools.web_search,
+        ...getAttachmentOwnership(metadata),
+        messageId: metadata?.run_id,
+        toolCallId,
+        conversationId: metadata?.thread_id,
+        [Tools.web_search]: { turn: 0, organic: sources },
+      };
+      writeAttachment(res, streamId, attachment, jobCreatedAt);
+      /** The stream write only reaches the live reader. Persisted attachments
+       * come from `artifactPromises`, so the citations have to land there too
+       * or a reopened conversation shows the card with an empty source list. */
+      artifactPromises?.push(Promise.resolve(attachment));
     },
     events: {
       runStep: GraphEvents.ON_RUN_STEP,
