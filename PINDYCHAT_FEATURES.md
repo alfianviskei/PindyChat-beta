@@ -370,7 +370,7 @@ Untuk menambah tool seperti `i2i_search` atau `t2i_search`, perlu modifikasi sou
 
 ### `librechat.yaml`:
 ```yaml
-version: 1.3.16
+version: 1.3.18
 cache: true
 fileConfig:
   endpoints:
@@ -390,6 +390,7 @@ endpoints:
         default:
           - "qwen3.7-plus"
           - "qwen3.8-max"
+          - "qwen4-max-preview"
       fetch: false
       titleConvo: true
       titleModel: "qwen3.7-plus"
@@ -397,7 +398,15 @@ endpoints:
       iconURL: "/assets/qwen.svg"
       addParams:
         enable_thinking: true    # ← Extended reasoning aktif
-        web_search: true         # ← Web search via Responses API
+      # web_search TIDAK di sini — lihat §2. Literal di addParams menimpa
+      # switch per-chat; defaultnya diatur lewat customParams.paramDefinitions.
+      customParams:
+        paramDefinitions:
+          - key: web_search
+            type: boolean
+            default: true
+            component: switch
+            optionType: model
 ```
 
 ### `.env` (relevan):
@@ -759,31 +768,72 @@ PindyChat, beserta penilaian jujur apakah perlu disetel:
 Selain itu `CONFIG_VERSION` naik ke **1.3.18** — sudah disamakan di
 `librechat.yaml`, jadi peringatan "Outdated Config version" tidak muncul.
 
-### Registry identitas provider: host token-plan belum dikenal
+### Registry identitas provider: host Qwen Cloud kini terdaftar
 
-Upstream menambah `packages/api/src/endpoints/custom/providers.ts` yang memetakan
-host ke identitas provider. Untuk Qwen hanya `dashscope.aliyuncs.com` yang
-terdaftar, sedangkan kita memakai `token-plan.maas.qwencloudapi.com` — tidak
-cocok. Dicek langsung:
+`packages/api/src/endpoints/custom/providers.ts` memetakan host ke identitas
+provider. Bawaan upstream hanya mengenal `dashscope.aliyuncs.com`; host kita
+`token-plan.maas.qwencloudapi.com` tidak cocok, sehingga endpoint berstatus tanpa
+identitas provider. Kini ditambahkan (bukan menggantikan — kedua host milik Qwen
+Cloud):
 
-| Input | Hasil `resolveProviderId` |
+```ts
+['dashscope.aliyuncs.com', ProviderId.qwen],
+['dashscope-intl.aliyuncs.com', ProviderId.qwen],
+['qwencloudapi.com', ProviderId.qwen],
+```
+
+Pencocokannya berbatas subdomain (`hostname === suffix || hostname.endsWith('.' + suffix)`),
+jadi satu entri apex menutup semua prefiks tenant — `token-plan.maas.…`,
+`maas.…`, dan tenant lain — tanpa perlu mendaftar satu per satu. Host tiruan
+seperti `evil-qwencloudapi.com` tetap tidak cocok (ada test-nya).
+
+**Apa yang tidak berubah: tidak ada fitur baru yang terbuka.** `providerId`
+hanya sinyal merek, dikonsumsi komponen ikon (`useProviderIcon`, `ConvoIcon`,
+`MessageEndpointIcon`, `GroupIcon`, `SpecIcon`, `AgentConfig`). Gerbang kemampuan
+memakai sinyal yang sama sekali lain:
+
+| Dicek langsung | Hasil |
 |---|---|
-| `iconURL: "/assets/qwen.svg"` | `null` (resolver mengharapkan nama, bukan path) |
-| `name: "Qwen-Cloud"` | `null` (normalisasi jadi `qwencloud`) |
-| `"qwen"` | `qwen` |
+| `EModelEndpoint` punya `qwen`? | **tidak** — hanya azureOpenAI, openAI, google, anthropic, assistants, azureAssistants, agents, custom, bedrock |
+| `isKnownProviderIdentifier('qwen')` | `false` |
+| `isMediaSupportedProvider('qwen')` | `false` |
+| `isDocumentSupportedProvider('qwen')` | `false` |
+| `isOpenAILikeProvider('qwen')` | `false` |
 
-Jadi endpoint kita berstatus **tanpa identitas provider**. Dampaknya kecil dan
-sengaja permisif: untuk media, endpoint tak dikenal tetap memakai default sistem
-(`resolve-llm-delivery-path.ts:194-215`), dan routing audio kita sudah dipatok
-eksplisit lewat `defaultLLMDeliveryPath`.
+Routing upload membaca field `provider` (dialek), **bukan** `providerId`
+(`routing.ts:124-137`), dan field itu hanya menerima `"anthropic"`
+(`config.ts:2305`). Jadi kemampuan tetap datang dari `supportedMimeTypes`,
+`paramDefinitions`, `addParams`, dan Agents untuk tool — bukan dari pendaftaran
+host. Keuntungan nyatanya kecil: marka Qwen resmi jadi fallback di tempat yang
+tidak membawa `iconURL`. Ikon kita sendiri tetap menang, karena `iconURL` berupa
+alamat gambar berada di precedence tertinggi (`useProviderIcon.ts:30-32`).
 
-**Tidak disarankan** mengakalinya dengan mengganti `name` menjadi `Qwen`: nama
-endpoint tersimpan per percakapan, jadi menggantinya akan yatim-kan chat yang
-sudah ada. Field `provider` pada custom endpoint juga **bukan** jalannya —
-schemanya hanya menerima `"anthropic"` (`config.ts:2305`), dan `provider: qwen`
-ditolak saat validasi (diverifikasi).
+**Tetap tidak disarankan** mengganti `name` menjadi `Qwen`: nama endpoint
+tersimpan per percakapan, jadi menggantinya akan menyatimkan chat yang sudah ada.
+
+### Jendela konteks: `qwen3.8-max` dan `qwen4-max-preview` 1M
+
+`maxTokensMap` mencocokkan id model secara substring terpanjang. Tanpa kunci
+sendiri, tier hosted jatuh ke jendela generasinya — atau lebih buruk, ke kunci
+`qwen` telanjang. Diukur sebelum/sesudah pada endpoint `custom`:
+
+| Model | Sebelum | Sesudah |
+|---|---|---|
+| `qwen3.7-plus` | 1.000.000 | 1.000.000 |
+| `qwen3.8-max` | 262.144 | **1.000.000** |
+| `qwen4-max-preview` | 32.000 | **1.000.000** |
+| `qwen4.0-max-preview` | 32.000 | **1.000.000** |
+| `qwen3.8` (open-weight) | 262.144 | 262.144 |
+
+Angka ini mengatur anggaran konteks yang dikirim ke model, jadi nilai yang
+terlalu kecil membuat percakapan panjang dipangkas padahal ruangnya masih ada.
+
+Spelling ganda itu perlu: gateway menjawab alias `qwen4-max-preview` dengan id
+kanonik **`qwen4.0-max-preview`** pada field `model` responsnya (diverifikasi
+live, HTTP 200), sehingga daftar model hasil fetch atau percakapan tersimpan bisa
+membawa salah satunya. Kedua model dikonfirmasi hidup di key token-plan.
 
 ---
 
 *Dokumentasi ini berdasarkan investigasi source code LibreChat.*
-*Update terakhir: 2026-11-12 — setelah merge upstream v0.8.9-rc1.*
+*Update terakhir: 2026-11-12 — host Qwen Cloud terdaftar, tier max 1M, `qwen4-max-preview` ditambahkan.*
